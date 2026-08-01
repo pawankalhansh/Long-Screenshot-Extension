@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Screenshot Result</title>
+  <link rel="stylesheet" href="result.css">
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v18H3z"/><path d="M12 8v8M8 12h8"/></svg>
+      <h1>Screenshot Ready</h1>
+    </div>
+    <div class="actions">
+      <button id="download-png" class="btn primary">Download PNG</button>
+      <button id="download-jpg" class="btn secondary">Download JPG</button>
+    </div>
+  </div>
+  
+  <div class="main-content">
+    <div class="preview-container">
+      <div id="loading" class="loading">Processing image...</div>
+      <canvas id="result-canvas"></canvas>
+    </div>
+  </div>
+
+  <script src="result.js"></script>
+</body>
+</html>

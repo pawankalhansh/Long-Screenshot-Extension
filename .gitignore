@@ -1,0 +1,11 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Node.js (just in case)
+node_modules/
+npm-debug.log
+
+# IDE files
+.vscode/
+.idea/
