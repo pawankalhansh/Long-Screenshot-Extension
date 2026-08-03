@@ -160,13 +160,96 @@ if (!window.lsCaptureLoaded) {
     });
   }
 
+  // --- Scroller Abstraction ---
+  function createScroller(element) {
+    if (element === window || element === document.scrollingElement || element === document.body || element === document.documentElement) {
+      return {
+        element: window,
+        getScrollTop: () => window.scrollY,
+        getScrollLeft: () => window.scrollX,
+        getScrollHeight: () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+        getViewportHeight: () => window.innerHeight,
+        getViewportWidth: () => window.innerWidth,
+        scrollTo: (x, y) => window.scrollTo(x, y),
+        scrollBy: (x, y) => window.scrollBy(x, y),
+        hideScrollbar: () => {
+          const orig = document.documentElement.style.overflow;
+          document.documentElement.style.overflow = 'hidden';
+          return () => document.documentElement.style.overflow = orig;
+        }
+      };
+    } else {
+      return {
+        element: element,
+        getScrollTop: () => element.scrollTop,
+        getScrollLeft: () => element.scrollLeft,
+        getScrollHeight: () => element.scrollHeight,
+        getViewportHeight: () => element.clientHeight,
+        getViewportWidth: () => element.clientWidth,
+        scrollTo: (x, y) => element.scrollTo(x, y),
+        scrollBy: (x, y) => element.scrollBy(x, y),
+        hideScrollbar: () => {
+          const orig = element.style.overflow;
+          element.style.overflow = 'hidden';
+          return () => element.style.overflow = orig;
+        }
+      };
+    }
+  }
+
+  function findMainScroller() {
+    const elements = document.querySelectorAll('*');
+    let maxArea = 0;
+    let mainScroller = window;
+
+    for (let el of elements) {
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
+      
+      const style = window.getComputedStyle(el);
+      const overflowY = style.overflowY;
+      
+      if ((overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && el.scrollHeight > el.clientHeight) {
+        const area = el.clientWidth * el.clientHeight;
+        if (area > maxArea) {
+          maxArea = area;
+          mainScroller = el;
+        }
+      }
+    }
+
+    const windowArea = window.innerWidth * window.innerHeight;
+    if (maxArea < windowArea * 0.3) {
+      return window;
+    }
+    
+    return mainScroller;
+  }
+
+  function findScrollerForPoint(x, y) {
+    const elements = document.elementsFromPoint(x, y);
+    for (let el of elements) {
+      if (el === document.documentElement || el === document.body) continue;
+      const style = window.getComputedStyle(el);
+      const overflowY = style.overflowY;
+      if ((overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && el.scrollHeight > el.clientHeight) {
+        return el;
+      }
+    }
+    return findMainScroller();
+  }
+
   // --- Area Capture Logic ---
-  let startX, startY;
+  let startClientX, startClientY;
   let lastClientX, lastClientY;
   let isDragging = false;
   let scrollSpeedY = 0;
   let scrollSpeedX = 0;
   let autoScrollActive = false;
+  let activeScroller = null;
+  
+  // Track start position in content space
+  let contentStartX = 0;
+  let contentStartY = 0;
 
   function startAreaCapture() {
     removeToolbar();
@@ -176,7 +259,6 @@ if (!window.lsCaptureLoaded) {
     captureRect.style.display = 'none'; // hide until drag
     isCapturingArea = true;
     
-    // Use capturing phase to intercept events early
     document.addEventListener('mousedown', onMouseDown, true);
   }
 
@@ -195,14 +277,28 @@ if (!window.lsCaptureLoaded) {
     e.preventDefault();
     e.stopPropagation();
     
-    startX = e.pageX;
-    startY = e.pageY;
+    activeScroller = createScroller(findScrollerForPoint(e.clientX, e.clientY));
+    
+    startClientX = e.clientX;
+    startClientY = e.clientY;
     lastClientX = e.clientX;
     lastClientY = e.clientY;
+    
+    // In scroller's content space:
+    let boundsLeft = 0, boundsTop = 0;
+    if (activeScroller.element !== window) {
+      const bounds = activeScroller.element.getBoundingClientRect();
+      boundsLeft = bounds.left;
+      boundsTop = bounds.top;
+    }
+    
+    contentStartX = (e.clientX - boundsLeft) + activeScroller.getScrollLeft();
+    contentStartY = (e.clientY - boundsTop) + activeScroller.getScrollTop();
+    
     isDragging = true;
     
-    captureRect.style.left = startX + 'px';
-    captureRect.style.top = startY + 'px';
+    captureRect.style.left = e.pageX + 'px';
+    captureRect.style.top = e.pageY + 'px';
     captureRect.style.width = '0px';
     captureRect.style.height = '0px';
     captureRect.style.display = 'block';
@@ -227,17 +323,22 @@ if (!window.lsCaptureLoaded) {
     const edgeSize = 50;
     const maxSpeed = 25;
     
-    if (lastClientY > window.innerHeight - edgeSize) {
+    let bounds = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+    if (activeScroller.element !== window) {
+      bounds = activeScroller.element.getBoundingClientRect();
+    }
+    
+    if (lastClientY > bounds.bottom - edgeSize) {
       scrollSpeedY = maxSpeed;
-    } else if (lastClientY < edgeSize) {
+    } else if (lastClientY < bounds.top + edgeSize) {
       scrollSpeedY = -maxSpeed;
     } else {
       scrollSpeedY = 0;
     }
     
-    if (lastClientX > window.innerWidth - edgeSize) {
+    if (lastClientX > bounds.right - edgeSize) {
       scrollSpeedX = maxSpeed;
-    } else if (lastClientX < edgeSize) {
+    } else if (lastClientX < bounds.left + edgeSize) {
       scrollSpeedX = -maxSpeed;
     } else {
       scrollSpeedX = 0;
@@ -249,21 +350,32 @@ if (!window.lsCaptureLoaded) {
     
     if (isDragging) {
       if (scrollSpeedY !== 0 || scrollSpeedX !== 0) {
-        window.scrollBy(scrollSpeedX, scrollSpeedY);
+        activeScroller.scrollBy(scrollSpeedX, scrollSpeedY);
       }
       
-      const currentX = lastClientX + window.scrollX;
-      const currentY = lastClientY + window.scrollY;
+      let boundsLeft = 0, boundsTop = 0;
+      if (activeScroller.element !== window) {
+        const bounds = activeScroller.element.getBoundingClientRect();
+        boundsLeft = bounds.left;
+        boundsTop = bounds.top;
+      }
       
-      const width = Math.abs(currentX - startX);
-      const height = Math.abs(currentY - startY);
-      const left = Math.min(startX, currentX);
-      const top = Math.min(startY, currentY);
+      const contentCurrentX = (lastClientX - boundsLeft) + activeScroller.getScrollLeft();
+      const contentCurrentY = (lastClientY - boundsTop) + activeScroller.getScrollTop();
       
-      captureRect.style.left = left + 'px';
-      captureRect.style.top = top + 'px';
-      captureRect.style.width = width + 'px';
-      captureRect.style.height = height + 'px';
+      const contentLeft = Math.min(contentStartX, contentCurrentX);
+      const contentTop = Math.min(contentStartY, contentCurrentY);
+      const contentWidth = Math.abs(contentCurrentX - contentStartX);
+      const contentHeight = Math.abs(contentCurrentY - contentStartY);
+      
+      // Convert content coordinates back to page coordinates for the visual rectangle
+      const screenX = boundsLeft + (contentLeft - activeScroller.getScrollLeft());
+      const screenY = boundsTop + (contentTop - activeScroller.getScrollTop());
+      
+      captureRect.style.left = (screenX + window.scrollX) + 'px';
+      captureRect.style.top = (screenY + window.scrollY) + 'px';
+      captureRect.style.width = contentWidth + 'px';
+      captureRect.style.height = contentHeight + 'px';
     }
     
     requestAnimationFrame(autoScrollLoop);
@@ -274,70 +386,53 @@ if (!window.lsCaptureLoaded) {
     e.preventDefault();
     e.stopPropagation();
     
-    // Final coordinates
-    const currentX = lastClientX + window.scrollX;
-    const currentY = lastClientY + window.scrollY;
+    let boundsLeft = 0, boundsTop = 0;
+    if (activeScroller.element !== window) {
+      const bounds = activeScroller.element.getBoundingClientRect();
+      boundsLeft = bounds.left;
+      boundsTop = bounds.top;
+    }
     
-    const width = Math.abs(currentX - startX);
-    const height = Math.abs(currentY - startY);
-    const left = Math.min(startX, currentX);
-    const top = Math.min(startY, currentY);
+    const contentCurrentX = (lastClientX - boundsLeft) + activeScroller.getScrollLeft();
+    const contentCurrentY = (lastClientY - boundsTop) + activeScroller.getScrollTop();
+    
+    const contentLeft = Math.min(contentStartX, contentCurrentX);
+    const contentTop = Math.min(contentStartY, contentCurrentY);
+    const contentWidth = Math.abs(contentCurrentX - contentStartX);
+    const contentHeight = Math.abs(contentCurrentY - contentStartY);
+    
+    const finalScroller = activeScroller; 
     
     stopAreaCapture();
     
-    if (width < 10 || height < 10) {
+    if (contentWidth < 10 || contentHeight < 10) {
       return;
     }
     
-    await wait(100); // wait for overlay to disappear
+    await wait(100); 
     
-    const rect = { x: left, y: top, width, height };
-    
-    // If the rect fits entirely in the current viewport, we can just do one capture
-    if (
-      left >= window.scrollX && 
-      top >= window.scrollY && 
-      left + width <= window.scrollX + window.innerWidth && 
-      top + height <= window.scrollY + window.innerHeight
-    ) {
-      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
-        if (response && response.dataUrl) {
-          chrome.runtime.sendMessage({
-            action: 'OPEN_RESULT',
-            payload: {
-              type: 'area',
-              image: response.dataUrl,
-              rect: { 
-                x: left - window.scrollX, 
-                y: top - window.scrollY, 
-                width, 
-                height 
-              },
-              dpr: window.devicePixelRatio
-            }
-          });
-        }
-      });
-    } else {
-      // Area spans outside current viewport, need to scroll and stitch
-      await captureAreaSegments(rect);
-    }
+    await captureAreaSegments({
+      left: contentLeft,
+      top: contentTop,
+      width: contentWidth,
+      height: contentHeight,
+      boundsLeft,
+      boundsTop
+    }, finalScroller);
   }
 
-  async function captureAreaSegments(rect) {
-    const originalScrollTop = window.scrollY;
-    const originalScrollLeft = window.scrollX;
-    const originalOverflow = document.documentElement.style.overflow;
+  async function captureAreaSegments(area, scroller) {
+    const originalScrollTop = scroller.getScrollTop();
+    const originalScrollLeft = scroller.getScrollLeft();
+    const restoreScrollbar = scroller.hideScrollbar();
     
-    document.documentElement.style.overflow = 'hidden';
-    
-    const viewportHeight = window.innerHeight;
-    const viewportWidth = window.innerWidth;
+    const viewportHeight = scroller.getViewportHeight();
+    const viewportWidth = scroller.getViewportWidth();
     
     const segments = [];
     
-    // Scroll to the top of the selected area
-    window.scrollTo(originalScrollLeft, rect.y);
+    // Scroll conceptually to the top of the selection
+    scroller.scrollTo(area.left, area.top);
     await wait(300);
     
     while (true) {
@@ -346,33 +441,42 @@ if (!window.lsCaptureLoaded) {
       });
       
       segments.push({
-        y: window.scrollY,
-        x: window.scrollX,
+        y: scroller.getScrollTop(),
+        x: scroller.getScrollLeft(),
         dataUrl: response.dataUrl
       });
       
-      if (window.scrollY + viewportHeight >= rect.y + rect.height) {
+      const scrolledSoFar = scroller.getScrollTop() - area.top;
+      
+      if (scrolledSoFar + viewportHeight >= area.height) {
         break;
       }
       
-      const previousScrollY = window.scrollY;
-      window.scrollBy(0, viewportHeight);
+      const previousScrollY = scroller.getScrollTop();
+      scroller.scrollBy(0, viewportHeight);
       await wait(300);
       
-      if (window.scrollY === previousScrollY) {
-        break; // reached bottom
+      if (scroller.getScrollTop() === previousScrollY) {
+        break; 
       }
     }
     
-    document.documentElement.style.overflow = originalOverflow;
-    window.scrollTo(originalScrollLeft, originalScrollTop);
+    restoreScrollbar();
+    scroller.scrollTo(originalScrollLeft, originalScrollTop);
     
     chrome.runtime.sendMessage({
       action: 'OPEN_RESULT',
       payload: {
         type: 'area_stitched',
         segments: segments,
-        rect: rect,
+        contentLeft: area.left,
+        contentTop: area.top,
+        contentWidth: area.width,
+        contentHeight: area.height,
+        boundsLeft: area.boundsLeft,
+        boundsTop: area.boundsTop,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
         dpr: window.devicePixelRatio
       }
     });
@@ -382,47 +486,50 @@ if (!window.lsCaptureLoaded) {
   async function startFullPageCapture() {
     removeToolbar();
     
-    const originalScrollTop = window.scrollY;
-    const originalOverflow = document.documentElement.style.overflow;
+    const scroller = createScroller(findMainScroller());
     
-    // Hide scrollbar
-    document.documentElement.style.overflow = 'hidden';
+    const originalScrollTop = scroller.getScrollTop();
+    const restoreScrollbar = scroller.hideScrollbar();
     
-    const totalHeight = document.documentElement.scrollHeight;
-    const viewportHeight = window.innerHeight;
-    const viewportWidth = window.innerWidth;
+    const totalHeight = scroller.getScrollHeight();
+    const viewportHeight = scroller.getViewportHeight();
+    const viewportWidth = scroller.getViewportWidth();
     
-    window.scrollTo(0, 0);
-    await wait(300); // Wait for initial scroll to settle and any lazy load elements to appear
+    scroller.scrollTo(0, 0);
+    await wait(300); 
     
     const segments = [];
     
     while (true) {
-      // Capture current view
       const response = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
       });
       
       segments.push({
-        y: window.scrollY,
+        y: scroller.getScrollTop(),
         dataUrl: response.dataUrl
       });
       
-      const previousScrollY = window.scrollY;
-      window.scrollBy(0, viewportHeight);
-      await wait(300); // Wait for rendering after scroll
+      const previousScrollY = scroller.getScrollTop();
+      scroller.scrollBy(0, viewportHeight);
+      await wait(300); 
       
-      if (window.scrollY === previousScrollY) {
-        // Reached the bottom
+      if (scroller.getScrollTop() === previousScrollY) {
         break;
       }
     }
     
-    // Restore state
-    document.documentElement.style.overflow = originalOverflow;
-    window.scrollTo(0, originalScrollTop);
+    restoreScrollbar();
+    scroller.scrollTo(0, originalScrollTop);
     
-    // Send data
+    let boundsTop = 0;
+    let boundsLeft = 0;
+    if (scroller.element !== window) {
+      const bounds = scroller.element.getBoundingClientRect();
+      boundsTop = bounds.top;
+      boundsLeft = bounds.left;
+    }
+
     chrome.runtime.sendMessage({
       action: 'OPEN_RESULT',
       payload: {
@@ -431,6 +538,8 @@ if (!window.lsCaptureLoaded) {
         totalHeight: totalHeight,
         viewportHeight: viewportHeight,
         viewportWidth: viewportWidth,
+        boundsTop: boundsTop,
+        boundsLeft: boundsLeft,
         dpr: window.devicePixelRatio
       }
     });

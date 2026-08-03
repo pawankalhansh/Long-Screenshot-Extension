@@ -41,38 +41,66 @@ async function processCapture(data) {
     const segments = data.segments;
     if (segments.length === 0) return;
     
-    // Calculate total actual height based on first image's aspect ratio or dpr
-    const firstImg = await loadImage(segments[0].dataUrl);
-    
-    canvas.width = firstImg.width;
+    canvas.width = data.viewportWidth * dpr;
     canvas.height = data.totalHeight * dpr;
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       const img = await loadImage(seg.dataUrl);
-      const dy = seg.y * dpr;
       
-      ctx.drawImage(img, 0, dy, img.width, img.height);
+      const sx = (data.boundsLeft || 0) * dpr;
+      const sy = (data.boundsTop || 0) * dpr;
+      const sWidth = data.viewportWidth * dpr;
+      const sHeight = data.viewportHeight * dpr;
+
+      const dx = 0;
+      const dy = (seg.y - segments[0].y) * dpr;
+      
+      ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
     }
   }
   else if (data.type === 'area_stitched') {
     const segments = data.segments;
     if (segments.length === 0) return;
     
-    const rect = data.rect;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    canvas.width = data.contentWidth * dpr;
+    canvas.height = data.contentHeight * dpr;
     
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       const img = await loadImage(seg.dataUrl);
       
-      // The segment captured the viewport at (seg.x, seg.y)
-      // To draw it so the 'rect' area aligns with the canvas origin (0,0):
-      const dx = (seg.x - rect.x) * dpr;
-      const dy = (seg.y - rect.y) * dpr;
+      // Viewport bounds in content space
+      const viewportTop = seg.y;
+      const viewportBottom = seg.y + data.viewportHeight;
+      const viewportLeft = seg.x;
+      const viewportRight = seg.x + data.viewportWidth;
       
-      ctx.drawImage(img, dx, dy, img.width, img.height);
+      // Selection bounds in content space
+      const contentTop = data.contentTop;
+      const contentBottom = data.contentTop + data.contentHeight;
+      const contentLeft = data.contentLeft;
+      const contentRight = data.contentLeft + data.contentWidth;
+      
+      // Intersection in content space
+      const intersectTop = Math.max(contentTop, viewportTop);
+      const intersectBottom = Math.min(contentBottom, viewportBottom);
+      const intersectLeft = Math.max(contentLeft, viewportLeft);
+      const intersectRight = Math.min(contentRight, viewportRight);
+      
+      if (intersectBottom > intersectTop && intersectRight > intersectLeft) {
+        // Screen (image) coordinates to crop from
+        const sx = (data.boundsLeft + (intersectLeft - viewportLeft)) * dpr;
+        const sy = (data.boundsTop + (intersectTop - viewportTop)) * dpr;
+        const sWidth = (intersectRight - intersectLeft) * dpr;
+        const sHeight = (intersectBottom - intersectTop) * dpr;
+        
+        // Canvas coordinates to draw to
+        const dx = (intersectLeft - contentLeft) * dpr;
+        const dy = (intersectTop - contentTop) * dpr;
+        
+        ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+      }
     }
   }
 

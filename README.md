@@ -3,9 +3,11 @@
 A premium Manifest V3 extension to capture full-page, visible, and specific area screenshots. Features a modern, Edge-inspired floating toolbar overlay.
 
 ## Features
-- **Capture Area**: Drag and select any part of a webpage to capture. It automatically scrolls if you drag beyond the visible screen!
+- **Smart Internal Scroll Detection**: Automatically detects and captures internal scrolling containers like chat histories (e.g., ChatGPT, Claude) or sidebars, not just the main window!
+- **Capture Area**: Drag and select any part of a webpage to capture. It automatically scrolls if you drag beyond the visible screen, even inside internal scrollable elements!
 - **Capture Visible**: Instantly captures what you currently see on your screen.
-- **Capture Full Page**: Automatically scrolls through the entire webpage and seamlessly stitches it into one continuous image.
+- **Capture Full Page**: Automatically scrolls through the entire webpage or chat window and seamlessly stitches it into one continuous image.
+- **Copy to Clipboard**: Easily copy the captured screenshot directly to your clipboard to paste in chats, docs, or emails.
 - **Save as PNG or JPG**: Download the captured images in your preferred format.
 - **Keyboard Shortcut**: Trigger the extension instantly using `Alt + Shift + S`.
 
