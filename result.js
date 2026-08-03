@@ -79,6 +79,33 @@ async function processCapture(data) {
   loading.style.display = 'none';
 
   // Setup download handlers
+  document.getElementById('copy-image').addEventListener('click', async () => {
+    const copyBtn = document.getElementById('copy-image');
+    const originalText = copyBtn.textContent;
+    copyBtn.textContent = 'Copying...';
+    
+    try {
+      canvas.toBlob(async (blob) => {
+        if (!blob) {
+          copyBtn.textContent = originalText;
+          alert('Failed to copy image.');
+          return;
+        }
+        const item = new ClipboardItem({ 'image/png': blob });
+        await navigator.clipboard.write([item]);
+        
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => {
+          copyBtn.textContent = originalText;
+        }, 2000);
+      }, 'image/png');
+    } catch (err) {
+      console.error('Error copying image: ', err);
+      copyBtn.textContent = originalText;
+      alert('Failed to copy image.');
+    }
+  });
+
   document.getElementById('download-png').addEventListener('click', () => download(canvas, 'image/png', 'screenshot.png'));
   document.getElementById('download-jpg').addEventListener('click', () => download(canvas, 'image/jpeg', 'screenshot.jpg'));
 }
