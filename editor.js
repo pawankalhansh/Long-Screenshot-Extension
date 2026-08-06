@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     annotationCanvas.height = resultCanvas.height;
     annotationCanvas.style.pointerEvents = 'auto';
     saveState(); // Initial empty state
+    updateCursor(); // Initialize cursor
   });
   
   // UI Bindings
@@ -38,7 +39,43 @@ document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
       e.currentTarget.classList.add('active');
       currentTool = tools[id];
+      updateCursor();
     });
+  }
+
+  function updateCursor() {
+    if (currentTool === 'crop' || currentTool === 'rect' || currentTool === 'scan') {
+      annotationCanvas.style.cursor = 'crosshair';
+    } else {
+      const size = currentTool === 'pen' ? currentSize : currentSize * 4;
+      const cursorSize = Math.max(size + 4, 16); // Ensure cursor canvas is at least 16x16
+      const canvas = document.createElement('canvas');
+      canvas.width = cursorSize;
+      canvas.height = cursorSize;
+      const c = canvas.getContext('2d');
+      
+      c.beginPath();
+      c.arc(cursorSize / 2, cursorSize / 2, size / 2, 0, Math.PI * 2);
+      
+      if (currentTool === 'eraser') {
+        c.strokeStyle = '#000';
+        c.lineWidth = 1;
+        c.stroke();
+        c.strokeStyle = '#fff';
+        c.beginPath();
+        c.arc(cursorSize / 2, cursorSize / 2, (size / 2) - 1, 0, Math.PI * 2);
+        c.stroke();
+      } else {
+        c.fillStyle = currentTool === 'highlight' ? hexToRgba(currentColor, 0.4) : currentColor;
+        c.fill();
+        c.strokeStyle = 'rgba(255,255,255,0.8)';
+        c.lineWidth = 1;
+        c.stroke();
+      }
+      
+      const dataUrl = canvas.toDataURL();
+      annotationCanvas.style.cursor = `url(${dataUrl}) ${cursorSize/2} ${cursorSize/2}, crosshair`;
+    }
   }
 
   // Modal logic
@@ -111,10 +148,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // (rest of editor.js remains unchanged until mousedown)
   document.getElementById('color-picker').addEventListener('input', (e) => {
     currentColor = e.target.value;
+    updateCursor();
   });
   
   document.getElementById('size-picker').addEventListener('input', (e) => {
     currentSize = parseInt(e.target.value, 10);
+    updateCursor();
   });
   
   document.getElementById('btn-undo').addEventListener('click', () => {
