@@ -284,17 +284,50 @@ document.addEventListener('DOMContentLoaded', () => {
   function saveState() {
     historyStep++;
     history = history.slice(0, historyStep);
-    history.push(annotationCanvas.toDataURL());
+    history.push({
+      ann: annotationCanvas.toDataURL(),
+      res: resultCanvas.toDataURL(),
+      width: annotationCanvas.width,
+      height: annotationCanvas.height
+    });
   }
   
-  function restoreState(dataUrl) {
-    const img = new Image();
-    img.onload = () => {
-      ctx.clearRect(0, 0, annotationCanvas.width, annotationCanvas.height);
+  function restoreState(state) {
+    if (typeof state === 'string') {
+      // Fallback for any string-based old states
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, annotationCanvas.width, annotationCanvas.height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(img, 0, 0);
+      };
+      img.src = state;
+      return;
+    }
+
+    if (annotationCanvas.width !== state.width || annotationCanvas.height !== state.height) {
+      annotationCanvas.width = state.width;
+      annotationCanvas.height = state.height;
+      resultCanvas.width = state.width;
+      resultCanvas.height = state.height;
+    }
+
+    const annImg = new Image();
+    annImg.onload = () => {
+      ctx.clearRect(0, 0, state.width, state.height);
       ctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(annImg, 0, 0);
     };
-    img.src = dataUrl;
+    annImg.src = state.ann;
+
+    const resImg = new Image();
+    resImg.onload = () => {
+      const resCtx = resultCanvas.getContext('2d');
+      resCtx.clearRect(0, 0, state.width, state.height);
+      resCtx.globalCompositeOperation = 'source-over';
+      resCtx.drawImage(resImg, 0, 0);
+    };
+    resImg.src = state.res;
   }
   
   function applyCrop(rx, ry, rw, rh) {
@@ -328,13 +361,11 @@ document.addEventListener('DOMContentLoaded', () => {
     resCtx.globalCompositeOperation = 'source-over';
     resCtx.drawImage(croppedRes, 0, 0);
     
-    // Reset history because base canvas changed
-    history = [];
-    historyStep = -1;
     saveState();
     
-    // Switch back to pen
-    document.getElementById('tool-pen').click();
+    // Switch back to crop tool for chaining crops, or let it stay on crop?
+    // User originally had 'pen' here but we set crop as default. We can keep crop active.
+    // document.getElementById('tool-pen').click(); // removed
   }
   
   annotationCanvas.addEventListener('mousedown', (e) => {
