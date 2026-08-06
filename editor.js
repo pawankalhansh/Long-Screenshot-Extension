@@ -200,28 +200,57 @@ document.addEventListener('DOMContentLoaded', () => {
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
       // 2.5 Pre-process for Tesseract
-      // Tesseract has its own highly advanced adaptive thresholding (Otsu).
-      // Custom global thresholding ruins gradient backgrounds (like skin tones).
-      // The best preprocessing for Tesseract is just a high-quality upscale and grayscale.
+      // Tesseract works best with dark text on light background.
+      // Strategy: upscale 3x, grayscale, then detect if the background is dark
+      // by sampling border pixels. If dark → invert the image (no binarization).
       const processCanvas = document.createElement('canvas');
-      const scale = 3; // Upscale by 3x to give Tesseract plenty of resolution for adaptive thresholding
+      const scale = 3;
       processCanvas.width = rw * scale;
       processCanvas.height = rh * scale;
       const pCtx = processCanvas.getContext('2d');
       
-      // Use high-quality smoothing for the upscale
       pCtx.imageSmoothingEnabled = true;
       pCtx.imageSmoothingQuality = 'high';
       pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
       
-      // Apply simple grayscale so Tesseract doesn't get confused by color noise
+      // Convert to grayscale first
       const imgData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
       const data = imgData.data;
+      const w = processCanvas.width;
+      const h = processCanvas.height;
+      
       for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i+1], b = data[i+2];
-        const v = 0.299 * r + 0.587 * g + 0.114 * b;
-        data[i] = data[i+1] = data[i+2] = v; // grayscale
+        const v = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+        data[i] = data[i+1] = data[i+2] = v;
       }
+      
+      // Sample border pixels (top/bottom rows, left/right columns) to detect background color
+      let borderSum = 0, borderCount = 0;
+      for (let x = 0; x < w; x++) {
+        // Top row
+        borderSum += data[(0 * w + x) * 4];
+        // Bottom row
+        borderSum += data[((h - 1) * w + x) * 4];
+        borderCount += 2;
+      }
+      for (let y = 0; y < h; y++) {
+        // Left column
+        borderSum += data[(y * w + 0) * 4];
+        // Right column
+        borderSum += data[(y * w + (w - 1)) * 4];
+        borderCount += 2;
+      }
+      const bgLuminance = borderSum / borderCount;
+      
+      // If background is dark (< 140), invert everything so text becomes dark on light
+      if (bgLuminance < 140) {
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = 255 - data[i];
+          data[i+1] = 255 - data[i+1];
+          data[i+2] = 255 - data[i+2];
+        }
+      }
+      
       pCtx.putImageData(imgData, 0, 0);
       
       modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
