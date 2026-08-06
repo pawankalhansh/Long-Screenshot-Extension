@@ -315,6 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   annotationCanvas.addEventListener('mousedown', (e) => {
+    e.preventDefault(); // CRITICAL: Prevent native browser drag/text selection
     isDrawing = true;
     lastPos = getMousePos(e);
     startPos = lastPos;
@@ -446,17 +447,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   
-  const stopDrawing = () => {
+  const stopDrawing = (e) => {
     if (isDrawing) {
       isDrawing = false;
       
       if (currentTool === 'crop' || currentTool === 'scan') {
         ctx.putImageData(previewState, 0, 0); // CRITICAL: Clear dark overlay before extracting pixels
         
-        const rx = Math.min(startPos.x, lastPos.x);
-        const ry = Math.min(startPos.y, lastPos.y);
-        const rw = Math.abs(lastPos.x - startPos.x);
-        const rh = Math.abs(lastPos.y - startPos.y);
+        // Use current mouse position to finish the crop/scan if they released outside
+        let finalPos;
+        if (e && e.clientX) {
+           finalPos = getMousePos(e);
+        } else {
+           finalPos = lastPos;
+        }
+        
+        const rx = Math.min(startPos.x, finalPos.x);
+        const ry = Math.min(startPos.y, finalPos.y);
+        const rw = Math.abs(finalPos.x - startPos.x);
+        const rh = Math.abs(finalPos.y - startPos.y);
         
         if (rw > 10 && rh > 10) {
           if (currentTool === 'crop') {
@@ -471,6 +480,5 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
   
-  annotationCanvas.addEventListener('mouseup', stopDrawing);
-  annotationCanvas.addEventListener('mouseout', stopDrawing);
+  window.addEventListener('mouseup', stopDrawing);
 });
