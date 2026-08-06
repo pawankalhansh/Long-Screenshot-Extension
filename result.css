@@ -106,7 +106,86 @@ h1 {
   display: block;
   max-width: 100%;
   height: auto;
-  /* Allow canvas to shrink nicely in preview but preserve actual size data */
+}
+
+#annotation-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* Default to none, enabled in JS */
+}
+
+.editor-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 32px;
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  z-index: 9;
+}
+
+.tools-left, .tools-right, .tool-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 6px;
+  cursor: pointer;
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.tool-btn:hover {
+  background: #f3f4f6;
+  color: #1f2937;
+}
+
+.tool-btn.active {
+  background: #e0f2fe;
+  border-color: #bae6fd;
+  color: #0369a1;
+}
+
+.divider {
+  width: 1px;
+  height: 24px;
+  background: #e5e7eb;
+  margin: 0 8px;
+}
+
+#color-picker {
+  -webkit-appearance: none;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+
+#color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+#color-picker::-webkit-color-swatch {
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+#size-picker {
+  width: 100px;
+  cursor: pointer;
 }
 
 .loading {

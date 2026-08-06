@@ -105,6 +105,19 @@ async function processCapture(data) {
   }
 
   loading.style.display = 'none';
+  window.dispatchEvent(new CustomEvent('screenshot-ready'));
+
+  function getCombinedCanvas() {
+    const annotationCanvas = document.getElementById('annotation-canvas');
+    if (!annotationCanvas || annotationCanvas.width === 0) return canvas; // Fallback if no annotations
+    const combined = document.createElement('canvas');
+    combined.width = canvas.width;
+    combined.height = canvas.height;
+    const combinedCtx = combined.getContext('2d');
+    combinedCtx.drawImage(canvas, 0, 0);
+    combinedCtx.drawImage(annotationCanvas, 0, 0);
+    return combined;
+  }
 
   // Setup download handlers
   document.getElementById('copy-image').addEventListener('click', async () => {
@@ -113,7 +126,7 @@ async function processCapture(data) {
     copyBtn.textContent = 'Copying...';
     
     try {
-      canvas.toBlob(async (blob) => {
+      getCombinedCanvas().toBlob(async (blob) => {
         if (!blob) {
           copyBtn.textContent = originalText;
           alert('Failed to copy image.');
@@ -134,8 +147,8 @@ async function processCapture(data) {
     }
   });
 
-  document.getElementById('download-png').addEventListener('click', () => download(canvas, 'image/png', 'screenshot.png'));
-  document.getElementById('download-jpg').addEventListener('click', () => download(canvas, 'image/jpeg', 'screenshot.jpg'));
+  document.getElementById('download-png').addEventListener('click', () => download(getCombinedCanvas(), 'image/png', 'screenshot.png'));
+  document.getElementById('download-jpg').addEventListener('click', () => download(getCombinedCanvas(), 'image/jpeg', 'screenshot.jpg'));
 }
 
 function loadImage(src) {
