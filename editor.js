@@ -210,6 +210,19 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       
       modalText.textContent = "Scanning image for text...";
+      
+      // DEBUG: Show the exact image being sent to Tesseract
+      let debugImg = document.getElementById('debug-ocr-img');
+      if (!debugImg) {
+        debugImg = document.createElement('img');
+        debugImg.id = 'debug-ocr-img';
+        debugImg.style.maxWidth = '100%';
+        debugImg.style.border = '1px solid red';
+        debugImg.style.marginBottom = '10px';
+        modalText.parentNode.insertBefore(debugImg, modalText);
+      }
+      debugImg.src = extractCanvas.toDataURL();
+      
       const { data: { text } } = await worker.recognize(extractCanvas.toDataURL());
       await worker.terminate();
       
