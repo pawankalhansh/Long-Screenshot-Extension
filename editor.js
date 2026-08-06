@@ -28,7 +28,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'tool-pen': 'pen',
     'tool-highlight': 'highlight',
     'tool-eraser': 'eraser',
-    'tool-rect': 'rect'
+    'tool-rect': 'rect',
+    'tool-crop': 'crop'
   };
   
   for (let id in tools) {
@@ -81,7 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
   
   function saveState() {
     historyStep++;
-    // Remove any redo history
     history = history.slice(0, historyStep);
     history.push(annotationCanvas.toDataURL());
   }
@@ -96,12 +96,52 @@ document.addEventListener('DOMContentLoaded', () => {
     img.src = dataUrl;
   }
   
+  function applyCrop(rx, ry, rw, rh) {
+    // Restore preview state into a temp canvas
+    const tempAnn = document.createElement('canvas');
+    tempAnn.width = annotationCanvas.width;
+    tempAnn.height = annotationCanvas.height;
+    tempAnn.getContext('2d').putImageData(previewState, 0, 0);
+    
+    const croppedAnn = document.createElement('canvas');
+    croppedAnn.width = rw; croppedAnn.height = rh;
+    croppedAnn.getContext('2d').drawImage(tempAnn, rx, ry, rw, rh, 0, 0, rw, rh);
+    
+    const croppedRes = document.createElement('canvas');
+    croppedRes.width = rw; croppedRes.height = rh;
+    croppedRes.getContext('2d').drawImage(resultCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
+    
+    // Resize actual canvases
+    annotationCanvas.width = rw;
+    annotationCanvas.height = rh;
+    resultCanvas.width = rw;
+    resultCanvas.height = rh;
+    
+    // Draw cropped data back
+    ctx.clearRect(0, 0, rw, rh);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(croppedAnn, 0, 0);
+    
+    const resCtx = resultCanvas.getContext('2d');
+    resCtx.clearRect(0, 0, rw, rh);
+    resCtx.globalCompositeOperation = 'source-over';
+    resCtx.drawImage(croppedRes, 0, 0);
+    
+    // Reset history because base canvas changed
+    history = [];
+    historyStep = -1;
+    saveState();
+    
+    // Switch back to pen
+    document.getElementById('tool-pen').click();
+  }
+  
   annotationCanvas.addEventListener('mousedown', (e) => {
     isDrawing = true;
     lastPos = getMousePos(e);
     startPos = lastPos;
     
-    if (currentTool === 'rect') {
+    if (currentTool === 'rect' || currentTool === 'crop') {
       previewState = ctx.getImageData(0, 0, annotationCanvas.width, annotationCanvas.height);
     }
   });
@@ -139,13 +179,52 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.lineWidth = currentSize;
       ctx.strokeStyle = currentColor;
       ctx.strokeRect(startPos.x, startPos.y, pos.x - startPos.x, pos.y - startPos.y);
+    } else if (currentTool === 'crop') {
+      ctx.putImageData(previewState, 0, 0);
+      
+      // Draw dark overlay
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(0, 0, annotationCanvas.width, annotationCanvas.height);
+      
+      // Cut out crop box
+      const rx = Math.min(startPos.x, pos.x);
+      const ry = Math.min(startPos.y, pos.y);
+      const rw = Math.abs(pos.x - startPos.x);
+      const rh = Math.abs(pos.y - startPos.y);
+      
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+      ctx.fillRect(rx, ry, rw, rh);
+      
+      // Draw dashed border
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.setLineDash([]);
     }
   });
   
   const stopDrawing = () => {
     if (isDrawing) {
       isDrawing = false;
-      saveState();
+      
+      if (currentTool === 'crop') {
+        const rx = Math.min(startPos.x, lastPos.x);
+        const ry = Math.min(startPos.y, lastPos.y);
+        const rw = Math.abs(lastPos.x - startPos.x);
+        const rh = Math.abs(lastPos.y - startPos.y);
+        
+        if (rw > 10 && rh > 10) {
+          applyCrop(rx, ry, rw, rh);
+        } else {
+          ctx.putImageData(previewState, 0, 0);
+        }
+      } else {
+        saveState();
+      }
     }
   };
   
