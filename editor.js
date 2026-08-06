@@ -199,21 +199,56 @@ document.addEventListener('DOMContentLoaded', () => {
       const exCtx = extractCanvas.getContext('2d');
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
-      // 2.5 Pre-process for Tesseract
-      // Use canvas filter pipeline: extreme contrast separates text from background,
-      // then grayscale removes color noise. This is GPU-accelerated and much more
-      // effective than manual pixel manipulation.
-      const processCanvas = document.createElement('canvas');
-      const scale = 3;
-      processCanvas.width = rw * scale;
-      processCanvas.height = rh * scale;
-      const pCtx = processCanvas.getContext('2d');
+      // 2.5 ADAPTIVE LOCAL THRESHOLDING
+      // Problem: Global contrast/inversion fails on gradient backgrounds (skin, photos)
+      // because hair/skin features get amplified into false text.
+      // Solution: Compare each pixel to its LOCAL neighborhood (via Gaussian blur).
+      // Text ALWAYS deviates from its immediate surroundings — regardless of bg color.
+      // |pixel - localMean| > threshold → text → black
+      // otherwise → background → white
+      // This produces a clean document-like image for Tesseract.
       
-      pCtx.imageSmoothingEnabled = true;
-      pCtx.imageSmoothingQuality = 'high';
-      pCtx.filter = 'grayscale(1) contrast(500%)';
-      pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
-      pCtx.filter = 'none';
+      const scale = 3;
+      const pw = rw * scale, ph = rh * scale;
+      
+      // Step A: Upscale + grayscale
+      const grayCanvas = document.createElement('canvas');
+      grayCanvas.width = pw; grayCanvas.height = ph;
+      const gCtx = grayCanvas.getContext('2d');
+      gCtx.imageSmoothingEnabled = true;
+      gCtx.imageSmoothingQuality = 'high';
+      gCtx.filter = 'grayscale(1)';
+      gCtx.drawImage(extractCanvas, 0, 0, pw, ph);
+      gCtx.filter = 'none';
+      
+      // Step B: Create blurred copy = local mean approximation
+      const blurCanvas = document.createElement('canvas');
+      blurCanvas.width = pw; blurCanvas.height = ph;
+      const bCtx = blurCanvas.getContext('2d');
+      bCtx.filter = 'blur(20px)';
+      bCtx.drawImage(grayCanvas, 0, 0);
+      bCtx.filter = 'none';
+      
+      // Step C: Adaptive threshold — compare original to local mean
+      const origData = gCtx.getImageData(0, 0, pw, ph);
+      const blurData = bCtx.getImageData(0, 0, pw, ph);
+      const processCanvas = document.createElement('canvas');
+      processCanvas.width = pw; processCanvas.height = ph;
+      const pCtx = processCanvas.getContext('2d');
+      const outData = pCtx.createImageData(pw, ph);
+      
+      const T = 15; // deviation threshold — pixels must differ from local mean by this much
+      for (let i = 0; i < origData.data.length; i += 4) {
+        const orig = origData.data[i];
+        const localMean = blurData.data[i];
+        const diff = Math.abs(orig - localMean);
+        
+        // Text deviates from background → BLACK (0), background is uniform → WHITE (255)
+        const val = diff > T ? 0 : 255;
+        outData.data[i] = outData.data[i+1] = outData.data[i+2] = val;
+        outData.data[i+3] = 255;
+      }
+      pCtx.putImageData(outData, 0, 0);
       
       modalText.textContent = "Loading Tesseract OCR engine...";
       
@@ -223,47 +258,23 @@ document.addEventListener('DOMContentLoaded', () => {
         corePath: chrome.runtime.getURL('tesseract/tesseract-core.wasm.js'),
         langPath: chrome.runtime.getURL('tesseract/lang-data'),
         workerBlobURL: false,
-        gzip: false,  // We use uncompressed traineddata for reliability in extensions
+        gzip: false,
         logger: m => console.log('Tesseract:', m)
       });
       
-      // PSM 6 = Assume a single uniform block of text (perfect for user-selected regions)
       await worker.setParameters({
         tessedit_pageseg_mode: '6',
       });
       
       modalText.textContent = "Scanning image for text...";
       
-      // 4. ALWAYS try both normal and inverted, pick the better result
-      // Attempt 1: high-contrast grayscale as-is
-      const result1 = await worker.recognize(processCanvas.toDataURL());
-      const text1 = result1.data.text.trim();
-      const conf1 = result1.data.confidence;
-      console.log('OCR attempt 1 (normal):', conf1, text1);
-      
-      // Attempt 2: invert the image (white text→black, dark bg→white)
-      modalText.textContent = "Trying inverted scan...";
-      const invData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
-      for (let i = 0; i < invData.data.length; i += 4) {
-        invData.data[i] = 255 - invData.data[i];
-        invData.data[i+1] = 255 - invData.data[i+1];
-        invData.data[i+2] = 255 - invData.data[i+2];
-      }
-      pCtx.putImageData(invData, 0, 0);
-      
-      const result2 = await worker.recognize(processCanvas.toDataURL());
-      const text2 = result2.data.text.trim();
-      const conf2 = result2.data.confidence;
-      console.log('OCR attempt 2 (inverted):', conf2, text2);
-      
-      // Pick whichever has higher confidence
-      const bestText = conf2 > conf1 ? text2 : text1;
-      const bestConf = Math.max(conf1, conf2);
-      console.log('OCR winner:', bestConf, bestText);
-      
+      // 4. OCR on the adaptively-thresholded image
+      const { data: { text, confidence } } = await worker.recognize(processCanvas.toDataURL());
       await worker.terminate();
       
-      // DEBUG: Show the winning image
+      console.log('OCR result:', confidence, text.trim());
+      
+      // DEBUG: Show the processed image
       let debugImg = document.getElementById('debug-ocr-img');
       if (!debugImg) {
         debugImg = document.createElement('img');
@@ -273,22 +284,9 @@ document.addEventListener('DOMContentLoaded', () => {
         debugImg.style.marginBottom = '10px';
         modalText.parentNode.insertBefore(debugImg, modalText);
       }
-      // Show the inverted version if it won, otherwise redraw original
-      if (conf2 > conf1) {
-        debugImg.src = processCanvas.toDataURL(); // already inverted
-      } else {
-        // Re-invert back to show original
-        const reData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
-        for (let i = 0; i < reData.data.length; i += 4) {
-          reData.data[i] = 255 - reData.data[i];
-          reData.data[i+1] = 255 - reData.data[i+1];
-          reData.data[i+2] = 255 - reData.data[i+2];
-        }
-        pCtx.putImageData(reData, 0, 0);
-        debugImg.src = processCanvas.toDataURL();
-      }
+      debugImg.src = processCanvas.toDataURL();
       
-      modalText.value = bestText || "No text found in this area.";
+      modalText.value = text.trim() || "No text found in this area.";
       modal.classList.add('active');
     } catch (err) {
       console.error("OCR Error:", err);
