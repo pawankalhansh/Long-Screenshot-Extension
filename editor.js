@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const annotationCanvas = document.getElementById('annotation-canvas');
   const ctx = annotationCanvas.getContext('2d');
   
-  let currentTool = 'pen';
+  let currentTool = 'crop';
   let isDrawing = false;
   let lastPos = { x: 0, y: 0 };
   let startPos = { x: 0, y: 0 };
