@@ -29,7 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'tool-highlight': 'highlight',
     'tool-eraser': 'eraser',
     'tool-rect': 'rect',
-    'tool-crop': 'crop'
+    'tool-crop': 'crop',
+    'tool-scan': 'scan'
   };
   
   for (let id in tools) {
@@ -39,7 +40,75 @@ document.addEventListener('DOMContentLoaded', () => {
       currentTool = tools[id];
     });
   }
+
+  // Modal logic
+  const modal = document.getElementById('ocr-modal');
+  const modalText = document.getElementById('ocr-result-text');
   
+  document.getElementById('close-modal').addEventListener('click', () => {
+    modal.classList.remove('active');
+  });
+  
+  document.getElementById('copy-ocr-text').addEventListener('click', async (e) => {
+    try {
+      await navigator.clipboard.writeText(modalText.value);
+      const btn = e.target;
+      const originalText = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = originalText, 2000);
+    } catch (err) {
+      console.error('Failed to copy text', err);
+    }
+  });
+
+  async function performOCR(rx, ry, rw, rh) {
+    const loading = document.getElementById('loading');
+    loading.textContent = "Scanning for text...";
+    loading.style.display = 'flex';
+    
+    try {
+      // 1. Get the combined canvas to scan both image and any annotations
+      const combined = document.createElement('canvas');
+      combined.width = resultCanvas.width;
+      combined.height = resultCanvas.height;
+      const combinedCtx = combined.getContext('2d');
+      combinedCtx.drawImage(resultCanvas, 0, 0);
+      
+      // We must use previewState for annotation because current annotationCanvas has the dark overlay
+      const tempAnn = document.createElement('canvas');
+      tempAnn.width = annotationCanvas.width;
+      tempAnn.height = annotationCanvas.height;
+      tempAnn.getContext('2d').putImageData(previewState, 0, 0);
+      combinedCtx.drawImage(tempAnn, 0, 0);
+      
+      // 2. Extract just the selected area
+      const extractCanvas = document.createElement('canvas');
+      extractCanvas.width = rw;
+      extractCanvas.height = rh;
+      extractCanvas.getContext('2d').drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
+      
+      // 3. Initialize Tesseract
+      const worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: chrome.runtime.getURL('tesseract/worker.min.js'),
+        corePath: chrome.runtime.getURL('tesseract/tesseract-core.wasm.js'),
+        langPath: chrome.runtime.getURL('tesseract/lang-data')
+      });
+      
+      const { data: { text } } = await worker.recognize(extractCanvas.toDataURL());
+      await worker.terminate();
+      
+      modalText.value = text.trim() || "No text found in this area.";
+      modal.classList.add('active');
+    } catch (err) {
+      console.error("OCR Error:", err);
+      alert("Failed to extract text: " + err.message);
+    } finally {
+      loading.style.display = 'none';
+      document.getElementById('tool-pen').click(); // switch back to pen
+    }
+  }
+
+  // (rest of editor.js remains unchanged until mousedown)
   document.getElementById('color-picker').addEventListener('input', (e) => {
     currentColor = e.target.value;
   });
@@ -141,7 +210,7 @@ document.addEventListener('DOMContentLoaded', () => {
     lastPos = getMousePos(e);
     startPos = lastPos;
     
-    if (currentTool === 'rect' || currentTool === 'crop') {
+    if (currentTool === 'rect' || currentTool === 'crop' || currentTool === 'scan') {
       previewState = ctx.getImageData(0, 0, annotationCanvas.width, annotationCanvas.height);
     }
   });
@@ -179,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.lineWidth = currentSize;
       ctx.strokeStyle = currentColor;
       ctx.strokeRect(startPos.x, startPos.y, pos.x - startPos.x, pos.y - startPos.y);
-    } else if (currentTool === 'crop') {
+    } else if (currentTool === 'crop' || currentTool === 'scan') {
       ctx.putImageData(previewState, 0, 0);
       
       // Draw dark overlay
@@ -187,7 +256,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(0, 0, annotationCanvas.width, annotationCanvas.height);
       
-      // Cut out crop box
+      // Cut out selection box
       const rx = Math.min(startPos.x, pos.x);
       const ry = Math.min(startPos.y, pos.y);
       const rw = Math.abs(pos.x - startPos.x);
@@ -197,17 +266,17 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.fillStyle = 'rgba(0, 0, 0, 1)';
       ctx.fillRect(rx, ry, rw, rh);
       
-      // Draw dashed border
+      // Draw border
       ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = currentTool === 'scan' ? '#0078D4' : '#fff';
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]);
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.setLineDash([]);
     }
     
-    // Always update lastPos for rect and crop as well
-    if (currentTool === 'rect' || currentTool === 'crop') {
+    // Always update lastPos for rect, crop, and scan as well
+    if (currentTool === 'rect' || currentTool === 'crop' || currentTool === 'scan') {
       lastPos = pos;
     }
   });
@@ -216,14 +285,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isDrawing) {
       isDrawing = false;
       
-      if (currentTool === 'crop') {
+      if (currentTool === 'crop' || currentTool === 'scan') {
         const rx = Math.min(startPos.x, lastPos.x);
         const ry = Math.min(startPos.y, lastPos.y);
         const rw = Math.abs(lastPos.x - startPos.x);
         const rh = Math.abs(lastPos.y - startPos.y);
         
         if (rw > 10 && rh > 10) {
-          applyCrop(rx, ry, rw, rh);
+          if (currentTool === 'crop') {
+            applyCrop(rx, ry, rw, rh);
+          } else if (currentTool === 'scan') {
+            performOCR(rx, ry, rw, rh);
+            ctx.putImageData(previewState, 0, 0); // clear the scan selection box
+          }
         } else {
           ctx.putImageData(previewState, 0, 0);
         }

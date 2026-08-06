@@ -31,6 +31,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["result.html", "result.css", "result.js", "editor.js", "tesseract/*", "tesseract/lang-data/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
