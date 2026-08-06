@@ -31,6 +31,9 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
   "web_accessible_resources": [
     {
       "resources": ["result.html", "result.css", "result.js", "editor.js", "tesseract/*", "tesseract/lang-data/*"],
