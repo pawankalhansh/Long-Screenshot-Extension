@@ -244,7 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
       modal.style.display = 'none';
     } finally {
       loading.style.display = 'none';
-      document.getElementById('tool-pen').click(); // switch back to pen
+      // keep current tool active, do not switch back to pen
     }
   }
 
