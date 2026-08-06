@@ -232,23 +232,9 @@ document.addEventListener('DOMContentLoaded', () => {
       
       modalText.textContent = "Scanning image for text...";
       
-      // 4. OCR — single attempt, no tricks
-      const { data: { text, confidence } } = await worker.recognize(processCanvas.toDataURL());
+      // 4. OCR
+      const { data: { text } } = await worker.recognize(processCanvas.toDataURL());
       await worker.terminate();
-      
-      console.log('OCR result:', confidence, text.trim());
-      
-      // DEBUG: Show the processed image
-      let debugImg = document.getElementById('debug-ocr-img');
-      if (!debugImg) {
-        debugImg = document.createElement('img');
-        debugImg.id = 'debug-ocr-img';
-        debugImg.style.maxWidth = '100%';
-        debugImg.style.border = '1px solid red';
-        debugImg.style.marginBottom = '10px';
-        modalText.parentNode.insertBefore(debugImg, modalText);
-      }
-      debugImg.src = processCanvas.toDataURL();
       
       modalText.value = text.trim() || "No text found in this area.";
       modal.classList.add('active');
