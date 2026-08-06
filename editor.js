@@ -198,13 +198,18 @@ document.addEventListener('DOMContentLoaded', () => {
       extractCanvas.height = rh;
       extractCanvas.getContext('2d').drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
+      modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
+      
       // 3. Initialize Tesseract
       const worker = await Tesseract.createWorker('eng', 1, {
         workerPath: chrome.runtime.getURL('tesseract/worker.min.js'),
         corePath: chrome.runtime.getURL('tesseract/tesseract-core.wasm.js'),
-        langPath: chrome.runtime.getURL('tesseract/lang-data')
+        langPath: chrome.runtime.getURL('tesseract/lang-data'),
+        workerBlobURL: false,
+        logger: m => console.log('Tesseract:', m)
       });
       
+      modalText.textContent = "Scanning image for text...";
       const { data: { text } } = await worker.recognize(extractCanvas.toDataURL());
       await worker.terminate();
       
@@ -212,7 +217,8 @@ document.addEventListener('DOMContentLoaded', () => {
       modal.classList.add('active');
     } catch (err) {
       console.error("OCR Error:", err);
-      alert("Failed to extract text: " + err.message);
+      alert("Failed to extract text: " + (err.message || (typeof err === 'string' ? err : JSON.stringify(err))));
+      modal.style.display = 'none';
     } finally {
       loading.style.display = 'none';
       document.getElementById('tool-pen').click(); // switch back to pen
