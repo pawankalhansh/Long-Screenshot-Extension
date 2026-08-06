@@ -234,38 +234,36 @@ document.addEventListener('DOMContentLoaded', () => {
       
       modalText.textContent = "Scanning image for text...";
       
-      // 4. First attempt: scan the grayscale image as-is
-      const firstResult = await worker.recognize(processCanvas.toDataURL());
-      let bestText = firstResult.data.text.trim();
-      let bestConf = firstResult.data.confidence;
+      // 4. ALWAYS try both normal and inverted, pick the better result
+      // Attempt 1: high-contrast grayscale as-is
+      const result1 = await worker.recognize(processCanvas.toDataURL());
+      const text1 = result1.data.text.trim();
+      const conf1 = result1.data.confidence;
+      console.log('OCR attempt 1 (normal):', conf1, text1);
       
-      // 5. If result is poor (short text or low confidence), try inverted image
-      if (bestText.length < 5 || bestConf < 60) {
-        modalText.textContent = "Retrying with inverted colors...";
-        
-        // Invert the grayscale image (white text → black text, dark bg → light bg)
-        const invData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
-        for (let i = 0; i < invData.data.length; i += 4) {
-          invData.data[i] = 255 - invData.data[i];
-          invData.data[i+1] = 255 - invData.data[i+1];
-          invData.data[i+2] = 255 - invData.data[i+2];
-        }
-        pCtx.putImageData(invData, 0, 0);
-        
-        const secondResult = await worker.recognize(processCanvas.toDataURL());
-        const invertedText = secondResult.data.text.trim();
-        const invertedConf = secondResult.data.confidence;
-        
-        // Keep whichever result is better
-        if (invertedText.length > bestText.length || invertedConf > bestConf) {
-          bestText = invertedText;
-          bestConf = invertedConf;
-        }
+      // Attempt 2: invert the image (white text→black, dark bg→white)
+      modalText.textContent = "Trying inverted scan...";
+      const invData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
+      for (let i = 0; i < invData.data.length; i += 4) {
+        invData.data[i] = 255 - invData.data[i];
+        invData.data[i+1] = 255 - invData.data[i+1];
+        invData.data[i+2] = 255 - invData.data[i+2];
       }
+      pCtx.putImageData(invData, 0, 0);
+      
+      const result2 = await worker.recognize(processCanvas.toDataURL());
+      const text2 = result2.data.text.trim();
+      const conf2 = result2.data.confidence;
+      console.log('OCR attempt 2 (inverted):', conf2, text2);
+      
+      // Pick whichever has higher confidence
+      const bestText = conf2 > conf1 ? text2 : text1;
+      const bestConf = Math.max(conf1, conf2);
+      console.log('OCR winner:', bestConf, bestText);
       
       await worker.terminate();
       
-      // DEBUG: Show the exact image being sent to Tesseract
+      // DEBUG: Show the winning image
       let debugImg = document.getElementById('debug-ocr-img');
       if (!debugImg) {
         debugImg = document.createElement('img');
@@ -275,7 +273,20 @@ document.addEventListener('DOMContentLoaded', () => {
         debugImg.style.marginBottom = '10px';
         modalText.parentNode.insertBefore(debugImg, modalText);
       }
-      debugImg.src = processCanvas.toDataURL();
+      // Show the inverted version if it won, otherwise redraw original
+      if (conf2 > conf1) {
+        debugImg.src = processCanvas.toDataURL(); // already inverted
+      } else {
+        // Re-invert back to show original
+        const reData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
+        for (let i = 0; i < reData.data.length; i += 4) {
+          reData.data[i] = 255 - reData.data[i];
+          reData.data[i+1] = 255 - reData.data[i+1];
+          reData.data[i+2] = 255 - reData.data[i+2];
+        }
+        pCtx.putImageData(reData, 0, 0);
+        debugImg.src = processCanvas.toDataURL();
+      }
       
       modalText.value = bestText || "No text found in this area.";
       modal.classList.add('active');
