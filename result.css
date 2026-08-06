@@ -201,8 +201,117 @@ h1 {
 
 .tools-left, .tools-right, .tool-group {
   display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.dropdown-group {
+  position: relative;
+}
+
+.dropdown-btn {
+  display: flex;
   align-items: center;
   gap: 8px;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #333;
+  font-family: inherit;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+
+.dropdown-btn:hover {
+  background: #f0f0f0;
+}
+
+.color-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #ccc;
+  display: inline-block;
+}
+
+.color-indicator.transparent {
+  background: repeating-conic-gradient(#fff 0 90deg, #eee 0 180deg) 0 0 / 8px 8px;
+}
+
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  padding: 16px;
+  width: 260px;
+  z-index: 200;
+  border: 1px solid #eaeaea;
+}
+
+.dropdown-menu.active {
+  display: block;
+}
+
+.menu-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+  color: #1a1a1a;
+}
+
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.color-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s;
+}
+
+.color-swatch:hover {
+  transform: scale(1.1);
+}
+
+.color-swatch.active {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #0078D4;
+}
+
+.color-swatch.transparent {
+  background: repeating-conic-gradient(#fff 0 90deg, #ccc 0 180deg) 0 0 / 10px 10px;
+  border: 1px solid #ccc;
+}
+
+.menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.menu-section label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.menu-section input[type="range"] {
+  width: 100%;
 }
 
 .tool-btn {

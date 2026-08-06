@@ -4,17 +4,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const ctx = annotationCanvas.getContext('2d');
   
   let currentTool = 'pen';
-  let currentColor = '#ff0000';
-  let currentSize = 4;
-  
   let isDrawing = false;
-  let lastPos = null;
-  let startPos = null;
-  let previewState = null;
+  let lastPos = { x: 0, y: 0 };
+  let startPos = { x: 0, y: 0 };
+  let outlineColor = '#ff0000';
+  let fillColor = 'transparent';
+  let currentSize = 4;
   
   // Undo/Redo stack
   let history = [];
   let historyStep = -1;
+  let previewState = null;
   
   window.addEventListener('screenshot-ready', () => {
     annotationCanvas.width = resultCanvas.width;
@@ -30,6 +30,9 @@ document.addEventListener('DOMContentLoaded', () => {
     'tool-highlight': 'highlight',
     'tool-eraser': 'eraser',
     'tool-rect': 'rect',
+    'tool-circle': 'circle',
+    'tool-line': 'line',
+    'tool-arrow': 'arrow',
     'tool-crop': 'crop',
     'tool-scan': 'scan'
   };
@@ -66,7 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
         c.arc(cursorSize / 2, cursorSize / 2, (size / 2) - 1, 0, Math.PI * 2);
         c.stroke();
       } else {
-        c.fillStyle = currentTool === 'highlight' ? hexToRgba(currentColor, 0.4) : currentColor;
+        c.fillStyle = currentTool === 'highlight' ? hexToRgba(outlineColor, 0.4) : outlineColor;
         c.fill();
         c.strokeStyle = 'rgba(255,255,255,0.8)';
         c.lineWidth = 1;
@@ -77,6 +80,77 @@ document.addEventListener('DOMContentLoaded', () => {
       annotationCanvas.style.cursor = `url(${dataUrl}) ${cursorSize/2} ${cursorSize/2}, crosshair`;
     }
   }
+
+  // Premium UI Dropdown Logic
+  let activeColorTarget = null; // 'outline' or 'fill'
+  const colorMenu = document.getElementById('color-menu');
+  const btnOutline = document.getElementById('btn-outline');
+  const btnFill = document.getElementById('btn-fill');
+  const indOutline = document.getElementById('indicator-outline');
+  const indFill = document.getElementById('indicator-fill');
+
+  function openColorMenu(target, btnElement) {
+    if (activeColorTarget === target && colorMenu.classList.contains('active')) {
+      colorMenu.classList.remove('active');
+      return;
+    }
+    activeColorTarget = target;
+    colorMenu.classList.add('active');
+    
+    // Position menu under the correct button
+    colorMenu.style.left = btnElement.offsetLeft + 'px';
+    document.getElementById('menu-title').textContent = target === 'outline' ? 'Outline Color' : 'Fill Color';
+    
+    // Highlight correct swatch
+    const activeColor = target === 'outline' ? outlineColor : fillColor;
+    document.querySelectorAll('.color-swatch').forEach(sw => {
+      sw.classList.toggle('active', sw.dataset.color === activeColor);
+    });
+  }
+
+  btnOutline.addEventListener('click', () => openColorMenu('outline', btnOutline));
+  btnFill.addEventListener('click', () => openColorMenu('fill', btnFill));
+
+  document.querySelectorAll('.color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', (e) => {
+      const color = e.currentTarget.dataset.color;
+      document.querySelectorAll('.color-swatch').forEach(sw => sw.classList.remove('active'));
+      e.currentTarget.classList.add('active');
+      
+      if (activeColorTarget === 'outline') {
+        outlineColor = color;
+        if (color === 'transparent') {
+           indOutline.classList.add('transparent');
+           indOutline.style.background = '';
+        } else {
+           indOutline.classList.remove('transparent');
+           indOutline.style.background = color;
+        }
+      } else {
+        fillColor = color;
+        if (color === 'transparent') {
+           indFill.classList.add('transparent');
+           indFill.style.background = '';
+        } else {
+           indFill.classList.remove('transparent');
+           indFill.style.background = color;
+        }
+      }
+      updateCursor();
+    });
+  });
+
+  document.getElementById('menu-size-picker').addEventListener('input', (e) => {
+    currentSize = parseInt(e.target.value, 10);
+    updateCursor();
+  });
+
+  // Close menu when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.dropdown-group')) {
+      colorMenu.classList.remove('active');
+    }
+  });
 
   // Modal logic
   const modal = document.getElementById('ocr-modal');
@@ -146,16 +220,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // (rest of editor.js remains unchanged until mousedown)
-  document.getElementById('color-picker').addEventListener('input', (e) => {
-    currentColor = e.target.value;
-    updateCursor();
-  });
-  
-  document.getElementById('size-picker').addEventListener('input', (e) => {
-    currentSize = parseInt(e.target.value, 10);
-    updateCursor();
-  });
-  
   document.getElementById('btn-undo').addEventListener('click', () => {
     if (historyStep > 0) {
       historyStep--;
@@ -249,10 +313,26 @@ document.addEventListener('DOMContentLoaded', () => {
     lastPos = getMousePos(e);
     startPos = lastPos;
     
-    if (currentTool === 'rect' || currentTool === 'crop' || currentTool === 'scan') {
+    if (['rect', 'circle', 'line', 'arrow', 'crop', 'scan'].includes(currentTool)) {
       previewState = ctx.getImageData(0, 0, annotationCanvas.width, annotationCanvas.height);
     }
   });
+  
+  function drawArrowhead(ctx, x, y, angle) {
+    const headlen = Math.max(10, currentSize * 3);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - headlen * Math.cos(angle - Math.PI / 6), y - headlen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(x - headlen * Math.cos(angle + Math.PI / 6), y - headlen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function applyShapeStyles(ctx) {
+    ctx.lineWidth = currentSize;
+    ctx.strokeStyle = outlineColor === 'transparent' ? 'rgba(0,0,0,0)' : outlineColor;
+    ctx.fillStyle = fillColor === 'transparent' ? 'rgba(0,0,0,0)' : fillColor;
+  }
   
   annotationCanvas.addEventListener('mousemove', (e) => {
     if (!isDrawing) return;
@@ -270,11 +350,11 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (currentTool === 'highlight') {
         ctx.globalCompositeOperation = 'source-over';
         ctx.lineWidth = currentSize * 4;
-        ctx.strokeStyle = hexToRgba(currentColor, 0.4);
+        ctx.strokeStyle = hexToRgba(outlineColor, 0.4);
       } else {
         ctx.globalCompositeOperation = 'source-over';
         ctx.lineWidth = currentSize;
-        ctx.strokeStyle = currentColor;
+        ctx.strokeStyle = outlineColor === 'transparent' ? '#000' : outlineColor;
       }
       
       ctx.lineCap = 'round';
@@ -284,9 +364,49 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (currentTool === 'rect') {
       ctx.putImageData(previewState, 0, 0);
       ctx.globalCompositeOperation = 'source-over';
-      ctx.lineWidth = currentSize;
-      ctx.strokeStyle = currentColor;
-      ctx.strokeRect(startPos.x, startPos.y, pos.x - startPos.x, pos.y - startPos.y);
+      applyShapeStyles(ctx);
+      
+      if (fillColor !== 'transparent') ctx.fillRect(startPos.x, startPos.y, pos.x - startPos.x, pos.y - startPos.y);
+      if (outlineColor !== 'transparent') ctx.strokeRect(startPos.x, startPos.y, pos.x - startPos.x, pos.y - startPos.y);
+    } else if (currentTool === 'circle') {
+      ctx.putImageData(previewState, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      applyShapeStyles(ctx);
+      
+      const radiusX = Math.abs(pos.x - startPos.x) / 2;
+      const radiusY = Math.abs(pos.y - startPos.y) / 2;
+      const centerX = Math.min(startPos.x, pos.x) + radiusX;
+      const centerY = Math.min(startPos.y, pos.y) + radiusY;
+      
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
+      if (fillColor !== 'transparent') ctx.fill();
+      if (outlineColor !== 'transparent') ctx.stroke();
+    } else if (currentTool === 'line') {
+      ctx.putImageData(previewState, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      applyShapeStyles(ctx);
+      
+      ctx.beginPath();
+      ctx.moveTo(startPos.x, startPos.y);
+      ctx.lineTo(pos.x, pos.y);
+      if (outlineColor !== 'transparent') ctx.stroke();
+    } else if (currentTool === 'arrow') {
+      ctx.putImageData(previewState, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      applyShapeStyles(ctx);
+      
+      const angle = Math.atan2(pos.y - startPos.y, pos.x - startPos.x);
+      
+      ctx.beginPath();
+      ctx.moveTo(startPos.x, startPos.y);
+      ctx.lineTo(pos.x, pos.y);
+      if (outlineColor !== 'transparent') ctx.stroke();
+      
+      if (outlineColor !== 'transparent') {
+        ctx.fillStyle = outlineColor;
+        drawArrowhead(ctx, pos.x, pos.y, angle);
+      }
     } else if (currentTool === 'crop' || currentTool === 'scan') {
       ctx.putImageData(previewState, 0, 0);
       
@@ -314,8 +434,8 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.setLineDash([]);
     }
     
-    // Always update lastPos for rect, crop, and scan as well
-    if (currentTool === 'rect' || currentTool === 'crop' || currentTool === 'scan') {
+    // Always update lastPos for shapes, crop, and scan
+    if (['rect', 'circle', 'line', 'arrow', 'crop', 'scan'].includes(currentTool)) {
       lastPos = pos;
     }
   });
