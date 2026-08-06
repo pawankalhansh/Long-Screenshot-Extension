@@ -45,6 +45,7 @@ if (!window.lsCaptureLoaded) {
   function toggleToolbar() {
     if (overlayHost) {
       removeToolbar();
+      stopAreaCapture();
       return;
     }
 
@@ -124,10 +125,25 @@ if (!window.lsCaptureLoaded) {
     document.body.appendChild(overlayHost);
 
     // Event Listeners
-    shadowRoot.getElementById('btn-area').addEventListener('click', () => startAreaCapture());
-    shadowRoot.getElementById('btn-visible').addEventListener('click', () => startVisibleCapture());
-    shadowRoot.getElementById('btn-full').addEventListener('click', () => startFullPageCapture());
-    shadowRoot.getElementById('btn-close').addEventListener('click', () => removeToolbar());
+    shadowRoot.getElementById('btn-area').addEventListener('click', () => {
+      stopAreaCapture(); // Reset state just in case
+      startAreaCapture(); // Start normally (hides toolbar)
+    });
+    shadowRoot.getElementById('btn-visible').addEventListener('click', () => {
+      stopAreaCapture();
+      startVisibleCapture();
+    });
+    shadowRoot.getElementById('btn-full').addEventListener('click', () => {
+      stopAreaCapture();
+      startFullPageCapture();
+    });
+    shadowRoot.getElementById('btn-close').addEventListener('click', () => {
+      stopAreaCapture();
+      removeToolbar();
+    });
+    
+    // Default to area capture without removing the toolbar
+    startAreaCapture(true);
   }
 
   function removeToolbar() {
@@ -251,8 +267,10 @@ if (!window.lsCaptureLoaded) {
   let contentStartX = 0;
   let contentStartY = 0;
 
-  function startAreaCapture() {
-    removeToolbar();
+  function startAreaCapture(keepToolbar = false) {
+    if (!keepToolbar) {
+      removeToolbar();
+    }
     captureOverlay.style.width = Math.max(document.documentElement.scrollWidth, window.innerWidth) + 'px';
     captureOverlay.style.height = Math.max(document.documentElement.scrollHeight, window.innerHeight) + 'px';
     captureOverlay.style.display = 'block';
@@ -274,6 +292,15 @@ if (!window.lsCaptureLoaded) {
 
   function onMouseDown(e) {
     if (!isCapturingArea) return;
+    
+    // Ignore clicks inside the toolbar
+    if (overlayHost && (e.composedPath().includes(overlayHost) || overlayHost.contains(e.target))) {
+      return;
+    }
+    
+    // Now hide the toolbar since we're actually starting a selection
+    removeToolbar();
+    
     e.preventDefault();
     e.stopPropagation();
     
