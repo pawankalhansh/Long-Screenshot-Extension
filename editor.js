@@ -199,56 +199,19 @@ document.addEventListener('DOMContentLoaded', () => {
       const exCtx = extractCanvas.getContext('2d');
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
-      // 2.5 ADAPTIVE LOCAL THRESHOLDING
-      // Problem: Global contrast/inversion fails on gradient backgrounds (skin, photos)
-      // because hair/skin features get amplified into false text.
-      // Solution: Compare each pixel to its LOCAL neighborhood (via Gaussian blur).
-      // Text ALWAYS deviates from its immediate surroundings — regardless of bg color.
-      // |pixel - localMean| > threshold → text → black
-      // otherwise → background → white
-      // This produces a clean document-like image for Tesseract.
-      
-      const scale = 3;
-      const pw = rw * scale, ph = rh * scale;
-      
-      // Step A: Upscale + grayscale
-      const grayCanvas = document.createElement('canvas');
-      grayCanvas.width = pw; grayCanvas.height = ph;
-      const gCtx = grayCanvas.getContext('2d');
-      gCtx.imageSmoothingEnabled = true;
-      gCtx.imageSmoothingQuality = 'high';
-      gCtx.filter = 'grayscale(1)';
-      gCtx.drawImage(extractCanvas, 0, 0, pw, ph);
-      gCtx.filter = 'none';
-      
-      // Step B: Create blurred copy = local mean approximation
-      const blurCanvas = document.createElement('canvas');
-      blurCanvas.width = pw; blurCanvas.height = ph;
-      const bCtx = blurCanvas.getContext('2d');
-      bCtx.filter = 'blur(20px)';
-      bCtx.drawImage(grayCanvas, 0, 0);
-      bCtx.filter = 'none';
-      
-      // Step C: Adaptive threshold — compare original to local mean
-      const origData = gCtx.getImageData(0, 0, pw, ph);
-      const blurData = bCtx.getImageData(0, 0, pw, ph);
+      // 2.5 Pre-process: JUST upscale, no filtering at all.
+      // Tesseract's LSTM (OEM 1) has its own internal preprocessing.
+      // All our custom grayscale/contrast/inversion/thresholding was making it WORSE
+      // by amplifying photo noise (skin pores, hair) into false text.
+      // The best thing to do is give Tesseract the cleanest, highest-res color image.
+      const scale = 4;
       const processCanvas = document.createElement('canvas');
-      processCanvas.width = pw; processCanvas.height = ph;
+      processCanvas.width = rw * scale;
+      processCanvas.height = rh * scale;
       const pCtx = processCanvas.getContext('2d');
-      const outData = pCtx.createImageData(pw, ph);
-      
-      const T = 15; // deviation threshold — pixels must differ from local mean by this much
-      for (let i = 0; i < origData.data.length; i += 4) {
-        const orig = origData.data[i];
-        const localMean = blurData.data[i];
-        const diff = Math.abs(orig - localMean);
-        
-        // Text deviates from background → BLACK (0), background is uniform → WHITE (255)
-        const val = diff > T ? 0 : 255;
-        outData.data[i] = outData.data[i+1] = outData.data[i+2] = val;
-        outData.data[i+3] = 255;
-      }
-      pCtx.putImageData(outData, 0, 0);
+      pCtx.imageSmoothingEnabled = true;
+      pCtx.imageSmoothingQuality = 'high';
+      pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
       
       modalText.textContent = "Loading Tesseract OCR engine...";
       
@@ -262,13 +225,14 @@ document.addEventListener('DOMContentLoaded', () => {
         logger: m => console.log('Tesseract:', m)
       });
       
+      // PSM 3 = Fully automatic page segmentation — let Tesseract decide
       await worker.setParameters({
-        tessedit_pageseg_mode: '6',
+        tessedit_pageseg_mode: '3',
       });
       
       modalText.textContent = "Scanning image for text...";
       
-      // 4. OCR on the adaptively-thresholded image
+      // 4. OCR — single attempt, no tricks
       const { data: { text, confidence } } = await worker.recognize(processCanvas.toDataURL());
       await worker.terminate();
       
