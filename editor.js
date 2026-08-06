@@ -209,24 +209,40 @@ document.addEventListener('DOMContentLoaded', () => {
       // Draw scaled up
       pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
       
-      // Apply basic grayscale and contrast filter via ImageData
+      // Apply advanced binarization and inversion
       const imgData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
       const data = imgData.data;
+      
+      // First pass: convert to grayscale and calculate average luminance
+      let totalLuminance = 0;
       for (let i = 0; i < data.length; i += 4) {
-        // Luminance
         const r = data[i], g = data[i+1], b = data[i+2];
         const v = 0.299 * r + 0.587 * g + 0.114 * b;
-        
-        // Simple thresholding to increase contrast (white text on dark -> black text on white or vice-versa)
-        // Actually, Tesseract handles both, but stretching contrast helps.
-        // Let's just do Grayscale and bump contrast
-        const contrast = 1.5; // contrast factor
-        let newV = ((v / 255 - 0.5) * contrast + 0.5) * 255;
-        if (newV > 255) newV = 255;
-        if (newV < 0) newV = 0;
-        
-        data[i] = data[i+1] = data[i+2] = newV;
+        data[i] = data[i+1] = data[i+2] = v; // Store grayscale
+        totalLuminance += v;
       }
+      
+      const avgLuminance = totalLuminance / (data.length / 4);
+      // If average luminance is low (dark background), we should invert it to get dark text on light background
+      const shouldInvert = avgLuminance < 128;
+      
+      // Second pass: binarize (threshold) and invert if necessary
+      // We use Otsu's method roughly or a simple threshold based on average
+      const threshold = avgLuminance; 
+      for (let i = 0; i < data.length; i += 4) {
+        let v = data[i];
+        
+        // Binarize
+        v = v > threshold ? 255 : 0;
+        
+        // Invert if we had a dark background originally
+        if (shouldInvert) {
+          v = 255 - v;
+        }
+        
+        data[i] = data[i+1] = data[i+2] = v;
+      }
+      
       pCtx.putImageData(imgData, 0, 0);
       
       modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
