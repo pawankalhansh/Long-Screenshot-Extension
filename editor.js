@@ -261,7 +261,13 @@ document.addEventListener('DOMContentLoaded', () => {
         corePath: chrome.runtime.getURL('tesseract/tesseract-core.wasm.js'),
         langPath: chrome.runtime.getURL('tesseract/lang-data'),
         workerBlobURL: false,
+        gzip: false,  // We use uncompressed traineddata for reliability in extensions
         logger: m => console.log('Tesseract:', m)
+      });
+      
+      // PSM 6 = Assume a single uniform block of text (perfect for user-selected regions)
+      await worker.setParameters({
+        tessedit_pageseg_mode: '6',
       });
       
       modalText.textContent = "Scanning image for text...";
