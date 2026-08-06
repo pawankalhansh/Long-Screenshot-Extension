@@ -102,6 +102,12 @@ h1 {
   align-items: center;
 }
 
+.canvas-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
 #result-canvas {
   display: block;
   max-width: 100%;

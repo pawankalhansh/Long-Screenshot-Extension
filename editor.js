@@ -205,6 +205,11 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.setLineDash([]);
     }
+    
+    // Always update lastPos for rect and crop as well
+    if (currentTool === 'rect' || currentTool === 'crop') {
+      lastPos = pos;
+    }
   });
   
   const stopDrawing = () => {
