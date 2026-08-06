@@ -199,50 +199,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const exCtx = extractCanvas.getContext('2d');
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
-      // 2.5 Pre-process for Tesseract (Upscale 2x + Grayscale/Contrast)
+      // 2.5 Pre-process for Tesseract
+      // Tesseract has its own highly advanced adaptive thresholding (Otsu).
+      // Custom global thresholding ruins gradient backgrounds (like skin tones).
+      // The best preprocessing for Tesseract is just a high-quality upscale and grayscale.
       const processCanvas = document.createElement('canvas');
-      const scale = 2; // Upscale by 2x for better OCR accuracy
+      const scale = 3; // Upscale by 3x to give Tesseract plenty of resolution for adaptive thresholding
       processCanvas.width = rw * scale;
       processCanvas.height = rh * scale;
       const pCtx = processCanvas.getContext('2d');
       
-      // Draw scaled up
+      // Use high-quality smoothing for the upscale
+      pCtx.imageSmoothingEnabled = true;
+      pCtx.imageSmoothingQuality = 'high';
       pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
       
-      // Apply advanced binarization and inversion
+      // Apply simple grayscale so Tesseract doesn't get confused by color noise
       const imgData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
       const data = imgData.data;
-      
-      // First pass: convert to grayscale and calculate average luminance
-      let totalLuminance = 0;
       for (let i = 0; i < data.length; i += 4) {
         const r = data[i], g = data[i+1], b = data[i+2];
         const v = 0.299 * r + 0.587 * g + 0.114 * b;
-        data[i] = data[i+1] = data[i+2] = v; // Store grayscale
-        totalLuminance += v;
+        data[i] = data[i+1] = data[i+2] = v; // grayscale
       }
-      
-      const avgLuminance = totalLuminance / (data.length / 4);
-      // If average luminance is low (dark background), we should invert it to get dark text on light background
-      const shouldInvert = avgLuminance < 128;
-      
-      // Second pass: binarize (threshold) and invert if necessary
-      // We use Otsu's method roughly or a simple threshold based on average
-      const threshold = avgLuminance; 
-      for (let i = 0; i < data.length; i += 4) {
-        let v = data[i];
-        
-        // Binarize
-        v = v > threshold ? 255 : 0;
-        
-        // Invert if we had a dark background originally
-        if (shouldInvert) {
-          v = 255 - v;
-        }
-        
-        data[i] = data[i+1] = data[i+2] = v;
-      }
-      
       pCtx.putImageData(imgData, 0, 0);
       
       modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
