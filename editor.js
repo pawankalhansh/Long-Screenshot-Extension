@@ -200,9 +200,9 @@ document.addEventListener('DOMContentLoaded', () => {
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
       // 2.5 Pre-process for Tesseract
-      // Tesseract works best with dark text on light background.
-      // Strategy: upscale 3x, grayscale, then detect if the background is dark
-      // by sampling border pixels. If dark → invert the image (no binarization).
+      // Use canvas filter pipeline: extreme contrast separates text from background,
+      // then grayscale removes color noise. This is GPU-accelerated and much more
+      // effective than manual pixel manipulation.
       const processCanvas = document.createElement('canvas');
       const scale = 3;
       processCanvas.width = rw * scale;
@@ -211,20 +211,9 @@ document.addEventListener('DOMContentLoaded', () => {
       
       pCtx.imageSmoothingEnabled = true;
       pCtx.imageSmoothingQuality = 'high';
+      pCtx.filter = 'grayscale(1) contrast(500%)';
       pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
-      
-      // Convert to grayscale first
-      const imgData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
-      const data = imgData.data;
-      const w = processCanvas.width;
-      const h = processCanvas.height;
-      
-      for (let i = 0; i < data.length; i += 4) {
-        const v = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-        data[i] = data[i+1] = data[i+2] = v;
-      }
-      
-      pCtx.putImageData(imgData, 0, 0);
+      pCtx.filter = 'none';
       
       modalText.textContent = "Loading Tesseract OCR engine...";
       
