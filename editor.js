@@ -224,36 +224,9 @@ document.addEventListener('DOMContentLoaded', () => {
         data[i] = data[i+1] = data[i+2] = v;
       }
       
-      // Sample border pixels (top/bottom rows, left/right columns) to detect background color
-      let borderSum = 0, borderCount = 0;
-      for (let x = 0; x < w; x++) {
-        // Top row
-        borderSum += data[(0 * w + x) * 4];
-        // Bottom row
-        borderSum += data[((h - 1) * w + x) * 4];
-        borderCount += 2;
-      }
-      for (let y = 0; y < h; y++) {
-        // Left column
-        borderSum += data[(y * w + 0) * 4];
-        // Right column
-        borderSum += data[(y * w + (w - 1)) * 4];
-        borderCount += 2;
-      }
-      const bgLuminance = borderSum / borderCount;
-      
-      // If background is dark (< 140), invert everything so text becomes dark on light
-      if (bgLuminance < 140) {
-        for (let i = 0; i < data.length; i += 4) {
-          data[i] = 255 - data[i];
-          data[i+1] = 255 - data[i+1];
-          data[i+2] = 255 - data[i+2];
-        }
-      }
-      
       pCtx.putImageData(imgData, 0, 0);
       
-      modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
+      modalText.textContent = "Loading Tesseract OCR engine...";
       
       // 3. Initialize Tesseract
       const worker = await Tesseract.createWorker('eng', 1, {
@@ -272,6 +245,37 @@ document.addEventListener('DOMContentLoaded', () => {
       
       modalText.textContent = "Scanning image for text...";
       
+      // 4. First attempt: scan the grayscale image as-is
+      const firstResult = await worker.recognize(processCanvas.toDataURL());
+      let bestText = firstResult.data.text.trim();
+      let bestConf = firstResult.data.confidence;
+      
+      // 5. If result is poor (short text or low confidence), try inverted image
+      if (bestText.length < 5 || bestConf < 60) {
+        modalText.textContent = "Retrying with inverted colors...";
+        
+        // Invert the grayscale image (white text → black text, dark bg → light bg)
+        const invData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
+        for (let i = 0; i < invData.data.length; i += 4) {
+          invData.data[i] = 255 - invData.data[i];
+          invData.data[i+1] = 255 - invData.data[i+1];
+          invData.data[i+2] = 255 - invData.data[i+2];
+        }
+        pCtx.putImageData(invData, 0, 0);
+        
+        const secondResult = await worker.recognize(processCanvas.toDataURL());
+        const invertedText = secondResult.data.text.trim();
+        const invertedConf = secondResult.data.confidence;
+        
+        // Keep whichever result is better
+        if (invertedText.length > bestText.length || invertedConf > bestConf) {
+          bestText = invertedText;
+          bestConf = invertedConf;
+        }
+      }
+      
+      await worker.terminate();
+      
       // DEBUG: Show the exact image being sent to Tesseract
       let debugImg = document.getElementById('debug-ocr-img');
       if (!debugImg) {
@@ -284,10 +288,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       debugImg.src = processCanvas.toDataURL();
       
-      const { data: { text } } = await worker.recognize(processCanvas.toDataURL());
-      await worker.terminate();
-      
-      modalText.value = text.trim() || "No text found in this area.";
+      modalText.value = bestText || "No text found in this area.";
       modal.classList.add('active');
     } catch (err) {
       console.error("OCR Error:", err);
