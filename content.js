@@ -403,6 +403,22 @@ if (!window.lsCaptureLoaded) {
     
     const finalScroller = activeScroller; 
     
+    // Check if the selection is entirely within the CURRENT viewport
+    const currentScrollX = finalScroller.getScrollLeft();
+    const currentScrollY = finalScroller.getScrollTop();
+    const vWidth = finalScroller.getViewportWidth();
+    const vHeight = finalScroller.getViewportHeight();
+    
+    const isFullyVisible = 
+      contentLeft >= currentScrollX &&
+      contentTop >= currentScrollY &&
+      (contentLeft + contentWidth) <= (currentScrollX + vWidth) &&
+      (contentTop + contentHeight) <= (currentScrollY + vHeight);
+      
+    // Screen coordinates of the selection right now
+    const screenX = boundsLeft + (contentLeft - currentScrollX);
+    const screenY = boundsTop + (contentTop - currentScrollY);
+    
     stopAreaCapture();
     
     if (contentWidth < 10 || contentHeight < 10) {
@@ -411,14 +427,35 @@ if (!window.lsCaptureLoaded) {
     
     await wait(100); 
     
-    await captureAreaSegments({
-      left: contentLeft,
-      top: contentTop,
-      width: contentWidth,
-      height: contentHeight,
-      boundsLeft,
-      boundsTop
-    }, finalScroller);
+    if (isFullyVisible) {
+      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
+        if (response && response.dataUrl) {
+          chrome.runtime.sendMessage({
+            action: 'OPEN_RESULT',
+            payload: {
+              type: 'area',
+              image: response.dataUrl,
+              rect: { 
+                x: screenX, 
+                y: screenY, 
+                width: contentWidth, 
+                height: contentHeight 
+              },
+              dpr: window.devicePixelRatio
+            }
+          });
+        }
+      });
+    } else {
+      await captureAreaSegments({
+        left: contentLeft,
+        top: contentTop,
+        width: contentWidth,
+        height: contentHeight,
+        boundsLeft,
+        boundsTop
+      }, finalScroller);
+    }
   }
 
   async function captureAreaSegments(area, scroller) {
