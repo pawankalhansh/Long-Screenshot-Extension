@@ -451,6 +451,8 @@ document.addEventListener('DOMContentLoaded', () => {
       isDrawing = false;
       
       if (currentTool === 'crop' || currentTool === 'scan') {
+        ctx.putImageData(previewState, 0, 0); // CRITICAL: Clear dark overlay before extracting pixels
+        
         const rx = Math.min(startPos.x, lastPos.x);
         const ry = Math.min(startPos.y, lastPos.y);
         const rw = Math.abs(lastPos.x - startPos.x);
@@ -461,10 +463,7 @@ document.addEventListener('DOMContentLoaded', () => {
             applyCrop(rx, ry, rw, rh);
           } else if (currentTool === 'scan') {
             performOCR(rx, ry, rw, rh);
-            ctx.putImageData(previewState, 0, 0); // clear the scan selection box
           }
-        } else {
-          ctx.putImageData(previewState, 0, 0);
         }
       } else {
         saveState();
