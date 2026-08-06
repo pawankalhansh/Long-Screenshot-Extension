@@ -196,7 +196,38 @@ document.addEventListener('DOMContentLoaded', () => {
       const extractCanvas = document.createElement('canvas');
       extractCanvas.width = rw;
       extractCanvas.height = rh;
-      extractCanvas.getContext('2d').drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
+      const exCtx = extractCanvas.getContext('2d');
+      exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
+      
+      // 2.5 Pre-process for Tesseract (Upscale 2x + Grayscale/Contrast)
+      const processCanvas = document.createElement('canvas');
+      const scale = 2; // Upscale by 2x for better OCR accuracy
+      processCanvas.width = rw * scale;
+      processCanvas.height = rh * scale;
+      const pCtx = processCanvas.getContext('2d');
+      
+      // Draw scaled up
+      pCtx.drawImage(extractCanvas, 0, 0, rw * scale, rh * scale);
+      
+      // Apply basic grayscale and contrast filter via ImageData
+      const imgData = pCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
+      const data = imgData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        // Luminance
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const v = 0.299 * r + 0.587 * g + 0.114 * b;
+        
+        // Simple thresholding to increase contrast (white text on dark -> black text on white or vice-versa)
+        // Actually, Tesseract handles both, but stretching contrast helps.
+        // Let's just do Grayscale and bump contrast
+        const contrast = 1.5; // contrast factor
+        let newV = ((v / 255 - 0.5) * contrast + 0.5) * 255;
+        if (newV > 255) newV = 255;
+        if (newV < 0) newV = 0;
+        
+        data[i] = data[i+1] = data[i+2] = newV;
+      }
+      pCtx.putImageData(imgData, 0, 0);
       
       modalText.textContent = "Loading Tesseract OCR engine...\nThis may take a moment on first run.";
       
@@ -221,9 +252,9 @@ document.addEventListener('DOMContentLoaded', () => {
         debugImg.style.marginBottom = '10px';
         modalText.parentNode.insertBefore(debugImg, modalText);
       }
-      debugImg.src = extractCanvas.toDataURL();
+      debugImg.src = processCanvas.toDataURL();
       
-      const { data: { text } } = await worker.recognize(extractCanvas.toDataURL());
+      const { data: { text } } = await worker.recognize(processCanvas.toDataURL());
       await worker.terminate();
       
       modalText.value = text.trim() || "No text found in this area.";
