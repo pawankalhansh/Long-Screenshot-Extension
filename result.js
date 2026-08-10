@@ -26,11 +26,12 @@ async function processCapture(data) {
     const img = await loadImage(data.image);
     const rect = data.rect;
     
-    // Scale rect by devicePixelRatio
-    const sx = rect.x * dpr;
-    const sy = rect.y * dpr;
-    const sWidth = rect.width * dpr;
-    const sHeight = rect.height * dpr;
+    const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
+    
+    const sx = Math.round(rect.x * actualDpr);
+    const sy = Math.round(rect.y * actualDpr);
+    const sWidth = Math.round(rect.width * actualDpr);
+    const sHeight = Math.round(rect.height * actualDpr);
 
     canvas.width = sWidth;
     canvas.height = sHeight;
@@ -41,30 +42,29 @@ async function processCapture(data) {
     const segments = data.segments;
     if (segments.length === 0) return;
     
-    canvas.width = data.viewportWidth * dpr;
-    canvas.height = data.totalHeight * dpr;
+    const firstImg = await loadImage(segments[0].dataUrl);
+    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+    
+    canvas.width = firstImg.width;
+    canvas.height = Math.round(data.totalHeight * actualDpr);
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       const img = await loadImage(seg.dataUrl);
+      const dy = Math.round(seg.y * actualDpr);
       
-      const sx = (data.boundsLeft || 0) * dpr;
-      const sy = (data.boundsTop || 0) * dpr;
-      const sWidth = data.viewportWidth * dpr;
-      const sHeight = data.viewportHeight * dpr;
-
-      const dx = 0;
-      const dy = (seg.y - segments[0].y) * dpr;
-      
-      ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+      ctx.drawImage(img, 0, dy, img.width, img.height);
     }
   }
   else if (data.type === 'area_stitched') {
     const segments = data.segments;
     if (segments.length === 0) return;
     
-    canvas.width = data.contentWidth * dpr;
-    canvas.height = data.contentHeight * dpr;
+    const firstImg = await loadImage(segments[0].dataUrl);
+    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+    
+    canvas.width = Math.round(data.contentWidth * actualDpr);
+    canvas.height = Math.round(data.contentHeight * actualDpr);
     
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
@@ -90,14 +90,14 @@ async function processCapture(data) {
       
       if (intersectBottom > intersectTop && intersectRight > intersectLeft) {
         // Screen (image) coordinates to crop from
-        const sx = (data.boundsLeft + (intersectLeft - viewportLeft)) * dpr;
-        const sy = (data.boundsTop + (intersectTop - viewportTop)) * dpr;
-        const sWidth = (intersectRight - intersectLeft) * dpr;
-        const sHeight = (intersectBottom - intersectTop) * dpr;
+        const sx = Math.round((data.boundsLeft + (intersectLeft - viewportLeft)) * actualDpr);
+        const sy = Math.round((data.boundsTop + (intersectTop - viewportTop)) * actualDpr);
+        const sWidth = Math.round((intersectRight - intersectLeft) * actualDpr);
+        const sHeight = Math.round((intersectBottom - intersectTop) * actualDpr);
         
         // Canvas coordinates to draw to
-        const dx = (intersectLeft - contentLeft) * dpr;
-        const dy = (intersectTop - contentTop) * dpr;
+        const dx = Math.round((intersectLeft - contentLeft) * actualDpr);
+        const dy = Math.round((intersectTop - contentTop) * actualDpr);
         
         ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
       }

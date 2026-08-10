@@ -169,7 +169,8 @@ if (!window.lsCaptureLoaded) {
           payload: {
             type: 'visible',
             image: response.dataUrl,
-            dpr: window.devicePixelRatio
+            dpr: window.devicePixelRatio,
+            windowWidth: window.innerWidth
           }
         });
       }
@@ -239,6 +240,34 @@ if (!window.lsCaptureLoaded) {
     }
     
     return mainScroller;
+  }
+
+  function hideFixedElements() {
+    const hiddenElements = [];
+    const nodeIterator = document.createNodeIterator(document.documentElement, NodeFilter.SHOW_ELEMENT, null, false);
+    let el;
+    while ((el = nodeIterator.nextNode())) {
+      const style = window.getComputedStyle(el);
+      if (style.position === 'fixed' || style.position === 'sticky') {
+        if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+          hiddenElements.push({
+            el: el,
+            originalOpacity: el.style.opacity,
+            originalTransition: el.style.transition
+          });
+          el.style.transition = 'none';
+          el.style.opacity = '0';
+        }
+      }
+    }
+    return function restoreFixedElements() {
+      hiddenElements.forEach(item => {
+        item.el.style.opacity = item.originalOpacity;
+        setTimeout(() => {
+          if (item.el) item.el.style.transition = item.originalTransition;
+        }, 50);
+      });
+    };
   }
 
   function findScrollerForPoint(x, y) {
@@ -459,17 +488,18 @@ if (!window.lsCaptureLoaded) {
         if (response && response.dataUrl) {
           chrome.runtime.sendMessage({
             action: 'OPEN_RESULT',
-            payload: {
-              type: 'area',
-              image: response.dataUrl,
-              rect: { 
-                x: screenX, 
-                y: screenY, 
-                width: contentWidth, 
-                height: contentHeight 
-              },
-              dpr: window.devicePixelRatio
-            }
+              payload: {
+                type: 'area',
+                image: response.dataUrl,
+                rect: { 
+                  x: screenX, 
+                  y: screenY, 
+                  width: contentWidth, 
+                  height: contentHeight 
+                },
+                dpr: window.devicePixelRatio,
+                windowWidth: window.innerWidth
+              }
           });
         }
       });
@@ -499,6 +529,9 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(area.left, area.top);
     await wait(300);
     
+    let restoreFixed = hideFixedElements();
+    await wait(100);
+
     while (true) {
       const response = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
@@ -525,6 +558,7 @@ if (!window.lsCaptureLoaded) {
       }
     }
     
+    if (restoreFixed) restoreFixed();
     restoreScrollbar();
     scroller.scrollTo(originalScrollLeft, originalScrollTop);
     
@@ -541,7 +575,8 @@ if (!window.lsCaptureLoaded) {
         boundsTop: area.boundsTop,
         viewportWidth: viewportWidth,
         viewportHeight: viewportHeight,
-        dpr: window.devicePixelRatio
+        dpr: window.devicePixelRatio,
+        windowWidth: window.innerWidth
       }
     });
   }
@@ -563,6 +598,8 @@ if (!window.lsCaptureLoaded) {
     await wait(300); 
     
     const segments = [];
+    let restoreFixed = hideFixedElements();
+    await wait(100);
     
     while (true) {
       const response = await new Promise(resolve => {
@@ -583,6 +620,7 @@ if (!window.lsCaptureLoaded) {
       }
     }
     
+    if (restoreFixed) restoreFixed();
     restoreScrollbar();
     scroller.scrollTo(0, originalScrollTop);
     
@@ -604,7 +642,8 @@ if (!window.lsCaptureLoaded) {
         viewportWidth: viewportWidth,
         boundsTop: boundsTop,
         boundsLeft: boundsLeft,
-        dpr: window.devicePixelRatio
+        dpr: window.devicePixelRatio,
+        windowWidth: window.innerWidth
       }
     });
   }
