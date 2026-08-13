@@ -248,7 +248,7 @@ if (!window.lsCaptureLoaded) {
     let el;
     while ((el = nodeIterator.nextNode())) {
       const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' || style.position === 'sticky') {
+      if (style.position === 'fixed') {
         if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
           hiddenElements.push({
             el: el,
@@ -529,9 +529,8 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(area.left, area.top);
     await wait(300);
     
-    let restoreFixed = hideFixedElements();
-    await wait(100);
-
+    let restoreFixed = null;
+    
     while (true) {
       const response = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
@@ -542,6 +541,10 @@ if (!window.lsCaptureLoaded) {
         x: scroller.getScrollLeft(),
         dataUrl: response.dataUrl
       });
+      
+      if (segments.length === 1) {
+        restoreFixed = hideFixedElements();
+      }
       
       const scrolledSoFar = scroller.getScrollTop() - area.top;
       
@@ -598,8 +601,7 @@ if (!window.lsCaptureLoaded) {
     await wait(300); 
     
     const segments = [];
-    let restoreFixed = hideFixedElements();
-    await wait(100);
+    let restoreFixed = null;
     
     while (true) {
       const response = await new Promise(resolve => {
@@ -610,6 +612,10 @@ if (!window.lsCaptureLoaded) {
         y: scroller.getScrollTop(),
         dataUrl: response.dataUrl
       });
+      
+      if (segments.length === 1) {
+        restoreFixed = hideFixedElements();
+      }
       
       const previousScrollY = scroller.getScrollTop();
       scroller.scrollBy(0, viewportHeight);
