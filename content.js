@@ -580,6 +580,7 @@ if (!window.lsCaptureLoaded) {
       // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
       if (segments.length >= 1) {
         hideFixedElements();
+        await wait(50); // Let browser repaint after hiding
       }
       
       const response = await new Promise(resolve => {
@@ -594,6 +595,7 @@ if (!window.lsCaptureLoaded) {
       
       if (segments.length === 1) {
         restoreFixed = hideFixedElements();
+        await wait(50);
       }
       
       const scrolledSoFar = scroller.getScrollTop() - area.top;
@@ -658,6 +660,7 @@ if (!window.lsCaptureLoaded) {
       // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
       if (segments.length >= 1) {
         hideFixedElements();
+        await wait(50); // Let browser repaint after hiding
       }
       
       const response = await new Promise(resolve => {
@@ -671,6 +674,7 @@ if (!window.lsCaptureLoaded) {
       
       if (segments.length === 1) {
         restoreFixed = hideFixedElements();
+        await wait(50);
       }
       
       const previousScrollY = scroller.getScrollTop();
