@@ -193,9 +193,13 @@ if (!window.lsCaptureLoaded) {
         scrollTo: (x, y) => { se.scrollLeft = x; se.scrollTop = y; },
         scrollBy: (x, y) => { se.scrollLeft += x; se.scrollTop += y; },
         hideScrollbar: () => {
-          const orig = document.documentElement.style.overflow;
-          document.documentElement.style.overflow = 'hidden';
-          return () => document.documentElement.style.overflow = orig;
+          const styleEl = document.createElement('style');
+          styleEl.textContent = `
+            html, body { scrollbar-width: none !important; -ms-overflow-style: none !important; }
+            html::-webkit-scrollbar, body::-webkit-scrollbar { display: none !important; }
+          `;
+          document.head.appendChild(styleEl);
+          return () => styleEl.remove();
         }
       };
     } else {
@@ -209,9 +213,18 @@ if (!window.lsCaptureLoaded) {
         scrollTo: (x, y) => { element.scrollLeft = x; element.scrollTop = y; },
         scrollBy: (x, y) => { element.scrollLeft += x; element.scrollTop += y; },
         hideScrollbar: () => {
-          const orig = element.style.overflow;
-          element.style.overflow = 'hidden';
-          return () => element.style.overflow = orig;
+          const origScrollbarWidth = element.style.scrollbarWidth;
+          element.style.scrollbarWidth = 'none';
+          const styleEl = document.createElement('style');
+          const lsId = 'ls-hsb-' + Math.random().toString(36).slice(2, 8);
+          element.dataset.lsId = lsId;
+          styleEl.textContent = `[data-ls-id="${lsId}"]::-webkit-scrollbar { display: none !important; }`;
+          document.head.appendChild(styleEl);
+          return () => {
+            element.style.scrollbarWidth = origScrollbarWidth;
+            styleEl.remove();
+            delete element.dataset.lsId;
+          };
         }
       };
     }
