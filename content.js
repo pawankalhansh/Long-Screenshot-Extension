@@ -576,6 +576,12 @@ if (!window.lsCaptureLoaded) {
     let restoreFixed = null;
     
     while (true) {
+      // Re-hide fixed/sticky elements before each capture after the first,
+      // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
+      if (segments.length >= 1) {
+        hideFixedElements();
+      }
+      
       const response = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
       });
@@ -648,6 +654,12 @@ if (!window.lsCaptureLoaded) {
     let restoreFixed = null;
     
     while (true) {
+      // Re-hide fixed/sticky elements before each capture after the first,
+      // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
+      if (segments.length >= 1) {
+        hideFixedElements();
+      }
+      
       const response = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
       });
