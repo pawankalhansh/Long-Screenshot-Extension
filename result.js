@@ -126,20 +126,26 @@ async function processCapture(data) {
     copyBtn.textContent = 'Copying...';
     
     try {
-      getCombinedCanvas().toBlob(async (blob) => {
+      exportCanvas(getCombinedCanvas(), 'image/png', 1.0, async (blob) => {
         if (!blob) {
           copyBtn.textContent = originalText;
-          alert('Failed to copy image.');
+          alert('Screenshot is too large to copy, even after scaling down.');
           return;
         }
-        const item = new ClipboardItem({ 'image/png': blob });
-        await navigator.clipboard.write([item]);
-        
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => {
+        try {
+          const item = new ClipboardItem({ 'image/png': blob });
+          await navigator.clipboard.write([item]);
+          
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => {
+            copyBtn.textContent = originalText;
+          }, 2000);
+        } catch (err) {
+          console.error('Clipboard write error:', err);
           copyBtn.textContent = originalText;
-        }, 2000);
-      }, 'image/png');
+          alert('Failed to write to clipboard.');
+        }
+      });
     } catch (err) {
       console.error('Error copying image: ', err);
       copyBtn.textContent = originalText;
@@ -147,8 +153,62 @@ async function processCapture(data) {
     }
   });
 
-  document.getElementById('download-png').addEventListener('click', () => download(getCombinedCanvas(), 'image/png', 'screenshot.png'));
-  document.getElementById('download-jpg').addEventListener('click', () => download(getCombinedCanvas(), 'image/jpeg', 'screenshot.jpg'));
+  document.getElementById('download-png').addEventListener('click', () => downloadFile(getCombinedCanvas(), 'image/png', 'screenshot.png', 'download-png'));
+  document.getElementById('download-jpg').addEventListener('click', () => downloadFile(getCombinedCanvas(), 'image/jpeg', 'screenshot.jpg', 'download-jpg'));
+}
+
+function getScaledCanvas(sourceCanvas, scale) {
+  const scaled = document.createElement('canvas');
+  scaled.width = Math.floor(sourceCanvas.width * scale);
+  scaled.height = Math.floor(sourceCanvas.height * scale);
+  const ctx = scaled.getContext('2d');
+  ctx.drawImage(sourceCanvas, 0, 0, scaled.width, scaled.height);
+  return scaled;
+}
+
+function exportCanvas(canvas, mimeType, quality, callback, scale = 1.0) {
+  let targetCanvas = canvas;
+  if (scale < 1.0) {
+    targetCanvas = getScaledCanvas(canvas, scale);
+  }
+  
+  targetCanvas.toBlob((blob) => {
+    if (blob) {
+      callback(blob);
+    } else {
+      // If failed, try scaling down further
+      const nextScale = scale * 0.75; // Reduce by 25%
+      if (nextScale < 0.2) {
+        callback(null); // Too small, give up
+      } else {
+        console.warn(`Export failed at scale ${scale}, retrying at ${nextScale}`);
+        exportCanvas(canvas, mimeType, quality, callback, nextScale);
+      }
+    }
+  }, mimeType, quality);
+}
+
+function downloadFile(canvas, mimeType, filename, btnId) {
+  const btn = document.getElementById(btnId);
+  const originalText = btn.textContent;
+  btn.textContent = 'Preparing...';
+  
+  exportCanvas(canvas, mimeType, 1.0, (blob) => {
+    if (!blob) {
+      alert('Screenshot is too large to download, even after scaling down.');
+      btn.textContent = originalText;
+      return;
+    }
+    
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    link.click();
+    
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    btn.textContent = originalText;
+  });
 }
 
 function loadImage(src) {
@@ -158,11 +218,4 @@ function loadImage(src) {
     img.onerror = reject;
     img.src = src;
   });
-}
-
-function download(canvas, mimeType, filename) {
-  const link = document.createElement('a');
-  link.download = filename;
-  link.href = canvas.toDataURL(mimeType, 1.0); // 1.0 quality for JPG
-  link.click();
 }
