@@ -290,15 +290,8 @@ if (!window.lsCaptureLoaded) {
       
       let shouldHide = false;
       
-      if (style.position === 'fixed') {
+      if (style.position === 'fixed' || style.position === 'sticky') {
         shouldHide = true;
-      } else if (style.position === 'sticky') {
-        // Only hide narrow sticky elements (headers, nav bars, footers).
-        // Tall sticky elements (like product image panels) are content — keep them.
-        const rect = el.getBoundingClientRect();
-        if (rect.height < 200) {
-          shouldHide = true;
-        }
       }
       
       if (shouldHide) {
