@@ -178,17 +178,20 @@ if (!window.lsCaptureLoaded) {
   }
 
   // --- Scroller Abstraction ---
+  // Uses direct property assignment (scrollTop/scrollLeft) instead of
+  // scrollTo()/scrollBy() API to bypass CSS scroll-behavior: smooth.
   function createScroller(element) {
     if (element === window || element === document.scrollingElement || element === document.body || element === document.documentElement) {
+      const se = document.scrollingElement || document.documentElement;
       return {
         element: window,
-        getScrollTop: () => window.scrollY,
-        getScrollLeft: () => window.scrollX,
+        getScrollTop: () => se.scrollTop,
+        getScrollLeft: () => se.scrollLeft,
         getScrollHeight: () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
-        scrollTo: (x, y) => window.scrollTo(x, y),
-        scrollBy: (x, y) => window.scrollBy(x, y),
+        scrollTo: (x, y) => { se.scrollLeft = x; se.scrollTop = y; },
+        scrollBy: (x, y) => { se.scrollLeft += x; se.scrollTop += y; },
         hideScrollbar: () => {
           const orig = document.documentElement.style.overflow;
           document.documentElement.style.overflow = 'hidden';
@@ -203,8 +206,8 @@ if (!window.lsCaptureLoaded) {
         getScrollHeight: () => element.scrollHeight,
         getViewportHeight: () => element.clientHeight,
         getViewportWidth: () => element.clientWidth,
-        scrollTo: (x, y) => element.scrollTo(x, y),
-        scrollBy: (x, y) => element.scrollBy(x, y),
+        scrollTo: (x, y) => { element.scrollLeft = x; element.scrollTop = y; },
+        scrollBy: (x, y) => { element.scrollLeft += x; element.scrollTop += y; },
         hideScrollbar: () => {
           const orig = element.style.overflow;
           element.style.overflow = 'hidden';
@@ -215,47 +218,53 @@ if (!window.lsCaptureLoaded) {
   }
 
   function findMainScroller() {
+    // Test scrollability using direct property assignment (synchronous, ignores CSS smooth scroll)
     function isScrollable(el) {
       if (el === window) {
-        if (window.scrollY > 0) return true;
-        window.scrollBy(0, 1);
-        if (window.scrollY > 0) {
-          window.scrollBy(0, -1);
-          return true;
-        }
-        return false;
+        const se = document.scrollingElement || document.documentElement;
+        const orig = se.scrollTop;
+        se.scrollTop = orig + 1;
+        const moved = se.scrollTop !== orig;
+        se.scrollTop = orig;
+        return moved;
       } else {
-        if (el.scrollTop > 0) return true;
-        el.scrollTop += 1;
-        if (el.scrollTop > 0) {
-          el.scrollTop -= 1;
-          return true;
-        }
-        return false;
+        const orig = el.scrollTop;
+        el.scrollTop = orig + 1;
+        const moved = el.scrollTop !== orig;
+        el.scrollTop = orig;
+        return moved;
       }
     }
 
-    if (isScrollable(window)) {
-      return window;
+    function scrollRange(el) {
+      if (el === window) {
+        const se = document.scrollingElement || document.documentElement;
+        return se.scrollHeight - se.clientHeight;
+      }
+      return el.scrollHeight - el.clientHeight;
     }
 
+    // Check ALL scrollable elements, including window, and pick the one
+    // with the most scrollable content. This avoids prematurely picking
+    // window on SPAs that use a custom scroll container.
     const elements = document.querySelectorAll('*');
-    let maxArea = 0;
-    let mainScroller = window; // fallback
+    let bestScroller = window;
+    let bestRange = isScrollable(window) ? scrollRange(window) : 0;
 
     for (let el of elements) {
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
+      if (el === document.body || el === document.documentElement) continue;
       
-      if (el.scrollHeight > el.clientHeight) {
-        const area = el.clientWidth * el.clientHeight;
-        if (area > maxArea && isScrollable(el)) {
-          maxArea = area;
-          mainScroller = el;
+      if (el.scrollHeight > el.clientHeight + 10 && isScrollable(el)) {
+        const range = scrollRange(el);
+        if (range > bestRange) {
+          bestRange = range;
+          bestScroller = el;
         }
       }
     }
     
-    return mainScroller;
+    return bestScroller;
   }
 
   function hideFixedElements() {
@@ -545,17 +554,6 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(area.left, area.top);
     await wait(300);
     
-    // Disable smooth scrolling temporarily
-    const originalHtmlScrollBehavior = document.documentElement.style.scrollBehavior;
-    const originalBodyScrollBehavior = document.body.style.scrollBehavior;
-    document.documentElement.style.scrollBehavior = 'auto';
-    document.body.style.scrollBehavior = 'auto';
-    let originalScrollerBehavior = '';
-    if (scroller.element !== window) {
-      originalScrollerBehavior = scroller.element.style.scrollBehavior;
-      scroller.element.style.scrollBehavior = 'auto';
-    }
-    
     let restoreFixed = null;
     
     while (true) {
@@ -590,11 +588,6 @@ if (!window.lsCaptureLoaded) {
     
     if (restoreFixed) restoreFixed();
     restoreScrollbar();
-    document.documentElement.style.scrollBehavior = originalHtmlScrollBehavior;
-    document.body.style.scrollBehavior = originalBodyScrollBehavior;
-    if (scroller.element !== window) {
-      scroller.element.style.scrollBehavior = originalScrollerBehavior;
-    }
     scroller.scrollTo(originalScrollLeft, originalScrollTop);
     
     chrome.runtime.sendMessage({
@@ -632,17 +625,6 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(0, 0);
     await wait(300); 
     
-    // Disable smooth scrolling temporarily
-    const originalHtmlScrollBehavior = document.documentElement.style.scrollBehavior;
-    const originalBodyScrollBehavior = document.body.style.scrollBehavior;
-    document.documentElement.style.scrollBehavior = 'auto';
-    document.body.style.scrollBehavior = 'auto';
-    let originalScrollerBehavior = '';
-    if (scroller.element !== window) {
-      originalScrollerBehavior = scroller.element.style.scrollBehavior;
-      scroller.element.style.scrollBehavior = 'auto';
-    }
-    
     const segments = [];
     let restoreFixed = null;
     
@@ -671,11 +653,6 @@ if (!window.lsCaptureLoaded) {
     
     if (restoreFixed) restoreFixed();
     restoreScrollbar();
-    document.documentElement.style.scrollBehavior = originalHtmlScrollBehavior;
-    document.body.style.scrollBehavior = originalBodyScrollBehavior;
-    if (scroller.element !== window) {
-      scroller.element.style.scrollBehavior = originalScrollerBehavior;
-    }
     scroller.scrollTo(0, originalScrollTop);
     
     let boundsTop = 0;
