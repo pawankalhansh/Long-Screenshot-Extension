@@ -529,6 +529,17 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(area.left, area.top);
     await wait(300);
     
+    // Disable smooth scrolling temporarily
+    const originalHtmlScrollBehavior = document.documentElement.style.scrollBehavior;
+    const originalBodyScrollBehavior = document.body.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    document.body.style.scrollBehavior = 'auto';
+    let originalScrollerBehavior = '';
+    if (scroller.element !== window) {
+      originalScrollerBehavior = scroller.element.style.scrollBehavior;
+      scroller.element.style.scrollBehavior = 'auto';
+    }
+    
     let restoreFixed = null;
     
     while (true) {
@@ -563,6 +574,11 @@ if (!window.lsCaptureLoaded) {
     
     if (restoreFixed) restoreFixed();
     restoreScrollbar();
+    document.documentElement.style.scrollBehavior = originalHtmlScrollBehavior;
+    document.body.style.scrollBehavior = originalBodyScrollBehavior;
+    if (scroller.element !== window) {
+      scroller.element.style.scrollBehavior = originalScrollerBehavior;
+    }
     scroller.scrollTo(originalScrollLeft, originalScrollTop);
     
     chrome.runtime.sendMessage({
@@ -600,6 +616,17 @@ if (!window.lsCaptureLoaded) {
     scroller.scrollTo(0, 0);
     await wait(300); 
     
+    // Disable smooth scrolling temporarily
+    const originalHtmlScrollBehavior = document.documentElement.style.scrollBehavior;
+    const originalBodyScrollBehavior = document.body.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    document.body.style.scrollBehavior = 'auto';
+    let originalScrollerBehavior = '';
+    if (scroller.element !== window) {
+      originalScrollerBehavior = scroller.element.style.scrollBehavior;
+      scroller.element.style.scrollBehavior = 'auto';
+    }
+    
     const segments = [];
     let restoreFixed = null;
     
@@ -628,6 +655,11 @@ if (!window.lsCaptureLoaded) {
     
     if (restoreFixed) restoreFixed();
     restoreScrollbar();
+    document.documentElement.style.scrollBehavior = originalHtmlScrollBehavior;
+    document.body.style.scrollBehavior = originalBodyScrollBehavior;
+    if (scroller.element !== window) {
+      scroller.element.style.scrollBehavior = originalScrollerBehavior;
+    }
     scroller.scrollTo(0, originalScrollTop);
     
     let boundsTop = 0;
