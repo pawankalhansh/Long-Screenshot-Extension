@@ -70,33 +70,36 @@ async function processCapture(data) {
       const seg = segments[i];
       const img = await loadImage(seg.dataUrl);
       
-      // Viewport bounds in content space
+      // Viewport bounds in content space (Vertical only)
       const viewportTop = seg.y;
       const viewportBottom = seg.y + data.viewportHeight;
-      const viewportLeft = seg.x;
-      const viewportRight = seg.x + data.viewportWidth;
       
       // Selection bounds in content space
       const contentTop = data.contentTop;
       const contentBottom = data.contentTop + data.contentHeight;
-      const contentLeft = data.contentLeft;
-      const contentRight = data.contentLeft + data.contentWidth;
       
-      // Intersection in content space
+      // Intersection in content space (Vertical only)
       const intersectTop = Math.max(contentTop, viewportTop);
       const intersectBottom = Math.min(contentBottom, viewportBottom);
-      const intersectLeft = Math.max(contentLeft, viewportLeft);
-      const intersectRight = Math.min(contentRight, viewportRight);
       
-      if (intersectBottom > intersectTop && intersectRight > intersectLeft) {
-        // Screen (image) coordinates to crop from
-        const sx = Math.round((data.boundsLeft + (intersectLeft - viewportLeft)) * actualDpr);
-        const sy = Math.round((data.boundsTop + (intersectTop - viewportTop)) * actualDpr);
-        const sWidth = Math.round((intersectRight - intersectLeft) * actualDpr);
+      if (intersectBottom > intersectTop) {
+        // Screen X of the selection's left edge
+        // boundsLeft is the scroller's on-screen X.
+        // contentLeft is the selection's X relative to the scroller's content.
+        // seg.x is the scroller's scrollLeft.
+        const screenX = data.boundsLeft + data.contentLeft - seg.x;
+        
+        // Screen Y of the current intersecting slice
+        const screenY = data.boundsTop + (intersectTop - seg.y);
+        
+        // Image coordinates to crop from
+        const sx = Math.max(0, Math.round(screenX * actualDpr));
+        const sy = Math.max(0, Math.round(screenY * actualDpr));
+        const sWidth = Math.round(data.contentWidth * actualDpr);
         const sHeight = Math.round((intersectBottom - intersectTop) * actualDpr);
         
         // Canvas coordinates to draw to
-        const dx = Math.round((intersectLeft - contentLeft) * actualDpr);
+        const dx = 0; // Always draw full width of selection
         const dy = Math.round((intersectTop - contentTop) * actualDpr);
         
         ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
