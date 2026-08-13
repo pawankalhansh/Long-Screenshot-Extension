@@ -215,28 +215,44 @@ if (!window.lsCaptureLoaded) {
   }
 
   function findMainScroller() {
+    function isScrollable(el) {
+      if (el === window) {
+        if (window.scrollY > 0) return true;
+        window.scrollBy(0, 1);
+        if (window.scrollY > 0) {
+          window.scrollBy(0, -1);
+          return true;
+        }
+        return false;
+      } else {
+        if (el.scrollTop > 0) return true;
+        el.scrollTop += 1;
+        if (el.scrollTop > 0) {
+          el.scrollTop -= 1;
+          return true;
+        }
+        return false;
+      }
+    }
+
+    if (isScrollable(window)) {
+      return window;
+    }
+
     const elements = document.querySelectorAll('*');
     let maxArea = 0;
-    let mainScroller = window;
+    let mainScroller = window; // fallback
 
     for (let el of elements) {
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
       
-      const style = window.getComputedStyle(el);
-      const overflowY = style.overflowY;
-      
-      if ((overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && el.scrollHeight > el.clientHeight) {
+      if (el.scrollHeight > el.clientHeight) {
         const area = el.clientWidth * el.clientHeight;
-        if (area > maxArea) {
+        if (area > maxArea && isScrollable(el)) {
           maxArea = area;
           mainScroller = el;
         }
       }
-    }
-
-    const windowArea = window.innerWidth * window.innerHeight;
-    if (maxArea < windowArea * 0.3) {
-      return window;
     }
     
     return mainScroller;
@@ -564,7 +580,7 @@ if (!window.lsCaptureLoaded) {
       }
       
       const previousScrollY = scroller.getScrollTop();
-      scroller.scrollBy(0, viewportHeight);
+      scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
       await wait(300);
       
       if (scroller.getScrollTop() === previousScrollY) {
@@ -645,7 +661,7 @@ if (!window.lsCaptureLoaded) {
       }
       
       const previousScrollY = scroller.getScrollTop();
-      scroller.scrollBy(0, viewportHeight);
+      scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
       await wait(300); 
       
       if (scroller.getScrollTop() === previousScrollY) {
