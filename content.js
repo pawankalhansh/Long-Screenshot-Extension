@@ -286,16 +286,29 @@ if (!window.lsCaptureLoaded) {
     let el;
     while ((el = nodeIterator.nextNode())) {
       const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+      
+      let shouldHide = false;
+      
       if (style.position === 'fixed') {
-        if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-          hiddenElements.push({
-            el: el,
-            originalOpacity: el.style.opacity,
-            originalTransition: el.style.transition
-          });
-          el.style.transition = 'none';
-          el.style.opacity = '0';
+        shouldHide = true;
+      } else if (style.position === 'sticky') {
+        // Only hide narrow sticky elements (headers, nav bars, footers).
+        // Tall sticky elements (like product image panels) are content — keep them.
+        const rect = el.getBoundingClientRect();
+        if (rect.height < 200) {
+          shouldHide = true;
         }
+      }
+      
+      if (shouldHide) {
+        hiddenElements.push({
+          el: el,
+          originalOpacity: el.style.opacity,
+          originalTransition: el.style.transition
+        });
+        el.style.transition = 'none';
+        el.style.opacity = '0';
       }
     }
     return function restoreFixedElements() {
