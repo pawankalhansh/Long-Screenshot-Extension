@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Long Screenshot",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Capture full page, visible screen, or specific areas with a premium Edge-like UI.",
   "permissions": [
     "activeTab",
@@ -23,9 +23,8 @@
     "_execute_action": {
       "suggested_key": {
         "default": "Alt+Shift+S",
-        "mac": "Alt+Shift+S"
-      },
-      "description": "Take Screenshot"
+        "mac": "Command+Shift+S"
+      }
     }
   },
   "background": {

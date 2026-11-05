@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let fillColor = 'transparent';
   let currentSize = 4;
   
-  // Undo/Redo stack
+  // Undo/Redo stack (capped to avoid memory exhaustion)
   let history = [];
   let historyStep = -1;
   let previewState = null;
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     annotationCanvas.width = resultCanvas.width;
     annotationCanvas.height = resultCanvas.height;
     annotationCanvas.style.pointerEvents = 'auto';
-    saveState(); // Initial empty state
+    saveState(true); // Initial state
     updateCursor(); // Initialize cursor
   });
   
@@ -38,12 +38,15 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   
   for (let id in tools) {
-    document.getElementById(id).addEventListener('click', (e) => {
-      document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
-      e.currentTarget.classList.add('active');
-      currentTool = tools[id];
-      updateCursor();
-    });
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('click', (e) => {
+        document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        currentTool = tools[id];
+        updateCursor();
+      });
+    }
   }
 
   function updateCursor() {
@@ -51,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
       annotationCanvas.style.cursor = 'crosshair';
     } else {
       const size = currentTool === 'pen' ? currentSize : currentSize * 4;
-      const cursorSize = Math.max(size + 4, 16); // Ensure cursor canvas is at least 16x16
+      const cursorSize = Math.max(size + 4, 16);
       const canvas = document.createElement('canvas');
       canvas.width = cursorSize;
       canvas.height = cursorSize;
@@ -81,8 +84,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Premium UI Dropdown Logic
-  let activeColorTarget = null; // 'outline' or 'fill'
+  // Dropdown Logic
+  let activeColorTarget = null;
   const colorMenu = document.getElementById('color-menu');
   const btnOutline = document.getElementById('btn-outline');
   const btnFill = document.getElementById('btn-fill');
@@ -97,19 +100,17 @@ document.addEventListener('DOMContentLoaded', () => {
     activeColorTarget = target;
     colorMenu.classList.add('active');
     
-    // Position menu under the correct button
     colorMenu.style.left = btnElement.offsetLeft + 'px';
     document.getElementById('menu-title').textContent = target === 'outline' ? 'Outline Color' : 'Fill Color';
     
-    // Highlight correct swatch
     const activeColor = target === 'outline' ? outlineColor : fillColor;
     document.querySelectorAll('.color-swatch').forEach(sw => {
       sw.classList.toggle('active', sw.dataset.color === activeColor);
     });
   }
 
-  btnOutline.addEventListener('click', () => openColorMenu('outline', btnOutline));
-  btnFill.addEventListener('click', () => openColorMenu('fill', btnFill));
+  if (btnOutline) btnOutline.addEventListener('click', () => openColorMenu('outline', btnOutline));
+  if (btnFill) btnFill.addEventListener('click', () => openColorMenu('fill', btnFill));
 
   document.querySelectorAll('.color-swatch').forEach(swatch => {
     swatch.addEventListener('click', (e) => {
@@ -140,14 +141,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  document.getElementById('menu-size-picker').addEventListener('input', (e) => {
-    currentSize = parseInt(e.target.value, 10);
-    updateCursor();
-  });
+  const menuSizePicker = document.getElementById('menu-size-picker');
+  if (menuSizePicker) {
+    menuSizePicker.addEventListener('input', (e) => {
+      currentSize = parseInt(e.target.value, 10);
+      updateCursor();
+    });
+  }
 
   // Close menu when clicking outside
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.dropdown-group')) {
+    if (!e.target.closest('.dropdown-group') && colorMenu) {
       colorMenu.classList.remove('active');
     }
   });
@@ -155,55 +159,72 @@ document.addEventListener('DOMContentLoaded', () => {
   // Modal logic
   const modal = document.getElementById('ocr-modal');
   const modalText = document.getElementById('ocr-result-text');
+  const closeModalBtn = document.getElementById('close-modal');
   
-  document.getElementById('close-modal').addEventListener('click', () => {
-    modal.classList.remove('active');
-  });
-  
-  document.getElementById('copy-ocr-text').addEventListener('click', async (e) => {
-    try {
-      await navigator.clipboard.writeText(modalText.value);
-      const btn = e.target;
-      const originalText = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => btn.textContent = originalText, 2000);
-    } catch (err) {
-      console.error('Failed to copy text', err);
+  if (closeModalBtn) {
+    closeModalBtn.addEventListener('click', () => {
+      modal.classList.remove('active');
+    });
+  }
+
+  // Close dialogs with Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' || e.code === 'Escape') {
+      if (modal && modal.classList.contains('active')) {
+        modal.classList.remove('active');
+      }
+      if (colorMenu && colorMenu.classList.contains('active')) {
+        colorMenu.classList.remove('active');
+      }
     }
   });
+  
+  const copyOcrBtn = document.getElementById('copy-ocr-text');
+  if (copyOcrBtn) {
+    copyOcrBtn.addEventListener('click', async (e) => {
+      try {
+        await navigator.clipboard.writeText(modalText.value);
+        const btn = e.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = originalText, 2000);
+      } catch (err) {
+        console.error('Failed to copy text', err);
+      }
+    });
+  }
 
   async function performOCR(rx, ry, rw, rh) {
+    rx = Math.max(0, Math.min(resultCanvas.width - 1, Math.round(rx)));
+    ry = Math.max(0, Math.min(resultCanvas.height - 1, Math.round(ry)));
+    rw = Math.max(1, Math.min(Math.round(rw), resultCanvas.width - rx));
+    rh = Math.max(1, Math.min(Math.round(rh), resultCanvas.height - ry));
+
     const loading = document.getElementById('loading');
     loading.textContent = "Scanning for text...";
     loading.style.display = 'flex';
     
     try {
-      // 1. Get the combined canvas to scan both image and any annotations
       const combined = document.createElement('canvas');
       combined.width = resultCanvas.width;
       combined.height = resultCanvas.height;
       const combinedCtx = combined.getContext('2d');
       combinedCtx.drawImage(resultCanvas, 0, 0);
       
-      // We must use previewState for annotation because current annotationCanvas has the dark overlay
       const tempAnn = document.createElement('canvas');
       tempAnn.width = annotationCanvas.width;
       tempAnn.height = annotationCanvas.height;
-      tempAnn.getContext('2d').putImageData(previewState, 0, 0);
-      combinedCtx.drawImage(tempAnn, 0, 0);
+      if (previewState) {
+        tempAnn.getContext('2d').putImageData(previewState, 0, 0);
+        combinedCtx.drawImage(tempAnn, 0, 0);
+      }
       
-      // 2. Extract just the selected area
       const extractCanvas = document.createElement('canvas');
       extractCanvas.width = rw;
       extractCanvas.height = rh;
       const exCtx = extractCanvas.getContext('2d');
       exCtx.drawImage(combined, rx, ry, rw, rh, 0, 0, rw, rh);
       
-      // 2.5 Pre-process: JUST upscale, no filtering at all.
-      // Tesseract's LSTM (OEM 1) has its own internal preprocessing.
-      // All our custom grayscale/contrast/inversion/thresholding was making it WORSE
-      // by amplifying photo noise (skin pores, hair) into false text.
-      // The best thing to do is give Tesseract the cleanest, highest-res color image.
       const scale = 4;
       const processCanvas = document.createElement('canvas');
       processCanvas.width = rw * scale;
@@ -215,7 +236,6 @@ document.addEventListener('DOMContentLoaded', () => {
       
       modalText.textContent = "Loading Tesseract OCR engine...";
       
-      // 3. Initialize Tesseract
       const worker = await Tesseract.createWorker('eng', 1, {
         workerPath: chrome.runtime.getURL('tesseract/worker.min.js'),
         corePath: chrome.runtime.getURL('tesseract/tesseract-core.wasm.js'),
@@ -225,14 +245,12 @@ document.addEventListener('DOMContentLoaded', () => {
         logger: m => console.log('Tesseract:', m)
       });
       
-      // PSM 3 = Fully automatic page segmentation — let Tesseract decide
       await worker.setParameters({
         tessedit_pageseg_mode: '3',
       });
       
       modalText.textContent = "Scanning image for text...";
       
-      // 4. OCR
       const { data: { text } } = await worker.recognize(processCanvas.toDataURL());
       await worker.terminate();
       
@@ -240,34 +258,38 @@ document.addEventListener('DOMContentLoaded', () => {
       modal.classList.add('active');
     } catch (err) {
       console.error("OCR Error:", err);
-      alert("Failed to extract text: " + (err.message || (typeof err === 'string' ? err : JSON.stringify(err))));
-      modal.style.display = 'none';
+      alert("Failed to extract text: " + (err.message || err));
+      modal.classList.remove('active');
     } finally {
       loading.style.display = 'none';
-      // keep current tool active, do not switch back to pen
     }
   }
 
-  // (rest of editor.js remains unchanged until mousedown)
-  document.getElementById('btn-undo').addEventListener('click', () => {
-    if (historyStep > 0) {
-      historyStep--;
-      restoreState(history[historyStep]);
-    }
-  });
+  const btnUndo = document.getElementById('btn-undo');
+  if (btnUndo) {
+    btnUndo.addEventListener('click', () => {
+      if (historyStep > 0) {
+        historyStep--;
+        restoreState(history[historyStep]);
+      }
+    });
+  }
   
-  document.getElementById('btn-redo').addEventListener('click', () => {
-    if (historyStep < history.length - 1) {
-      historyStep++;
-      restoreState(history[historyStep]);
-    }
-  });
+  const btnRedo = document.getElementById('btn-redo');
+  if (btnRedo) {
+    btnRedo.addEventListener('click', () => {
+      if (historyStep < history.length - 1) {
+        historyStep++;
+        restoreState(history[historyStep]);
+      }
+    });
+  }
   
   // Drawing logic
   function getMousePos(evt) {
     const rect = annotationCanvas.getBoundingClientRect();
-    const scaleX = annotationCanvas.width / rect.width;
-    const scaleY = annotationCanvas.height / rect.height;
+    const scaleX = annotationCanvas.width / (rect.width || 1);
+    const scaleY = annotationCanvas.height / (rect.height || 1);
     return {
       x: (evt.clientX - rect.left) * scaleX,
       y: (evt.clientY - rect.top) * scaleY
@@ -281,20 +303,29 @@ document.addEventListener('DOMContentLoaded', () => {
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
   
-  function saveState() {
+  // Save state with memory safety: only duplicate resultCanvas on crop!
+  function saveState(isCrop = false) {
     historyStep++;
     history = history.slice(0, historyStep);
+    
+    // Cap history to 15 items to prevent browser tab running out of memory
+    if (history.length > 15) {
+      history.shift();
+      historyStep--;
+    }
+    
     history.push({
       ann: annotationCanvas.toDataURL(),
-      res: resultCanvas.toDataURL(),
+      res: isCrop ? resultCanvas.toDataURL() : null,
       width: annotationCanvas.width,
       height: annotationCanvas.height
     });
   }
   
   function restoreState(state) {
+    if (!state) return;
+    
     if (typeof state === 'string') {
-      // Fallback for any string-based old states
       const img = new Image();
       img.onload = () => {
         ctx.clearRect(0, 0, annotationCanvas.width, annotationCanvas.height);
@@ -320,22 +351,30 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     annImg.src = state.ann;
 
-    const resImg = new Image();
-    resImg.onload = () => {
-      const resCtx = resultCanvas.getContext('2d');
-      resCtx.clearRect(0, 0, state.width, state.height);
-      resCtx.globalCompositeOperation = 'source-over';
-      resCtx.drawImage(resImg, 0, 0);
-    };
-    resImg.src = state.res;
+    if (state.res) {
+      const resImg = new Image();
+      resImg.onload = () => {
+        const resCtx = resultCanvas.getContext('2d');
+        resCtx.clearRect(0, 0, state.width, state.height);
+        resCtx.globalCompositeOperation = 'source-over';
+        resCtx.drawImage(resImg, 0, 0);
+      };
+      resImg.src = state.res;
+    }
   }
   
   function applyCrop(rx, ry, rw, rh) {
-    // Restore preview state into a temp canvas
+    rx = Math.max(0, Math.min(resultCanvas.width - 1, Math.round(rx)));
+    ry = Math.max(0, Math.min(resultCanvas.height - 1, Math.round(ry)));
+    rw = Math.max(1, Math.min(Math.round(rw), resultCanvas.width - rx));
+    rh = Math.max(1, Math.min(Math.round(rh), resultCanvas.height - ry));
+
     const tempAnn = document.createElement('canvas');
     tempAnn.width = annotationCanvas.width;
     tempAnn.height = annotationCanvas.height;
-    tempAnn.getContext('2d').putImageData(previewState, 0, 0);
+    if (previewState) {
+      tempAnn.getContext('2d').putImageData(previewState, 0, 0);
+    }
     
     const croppedAnn = document.createElement('canvas');
     croppedAnn.width = rw; croppedAnn.height = rh;
@@ -345,13 +384,11 @@ document.addEventListener('DOMContentLoaded', () => {
     croppedRes.width = rw; croppedRes.height = rh;
     croppedRes.getContext('2d').drawImage(resultCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
     
-    // Resize actual canvases
     annotationCanvas.width = rw;
     annotationCanvas.height = rh;
     resultCanvas.width = rw;
     resultCanvas.height = rh;
     
-    // Draw cropped data back
     ctx.clearRect(0, 0, rw, rh);
     ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(croppedAnn, 0, 0);
@@ -361,15 +398,11 @@ document.addEventListener('DOMContentLoaded', () => {
     resCtx.globalCompositeOperation = 'source-over';
     resCtx.drawImage(croppedRes, 0, 0);
     
-    saveState();
-    
-    // Switch back to crop tool for chaining crops, or let it stay on crop?
-    // User originally had 'pen' here but we set crop as default. We can keep crop active.
-    // document.getElementById('tool-pen').click(); // removed
+    saveState(true); // Result canvas changed
   }
   
   annotationCanvas.addEventListener('mousedown', (e) => {
-    e.preventDefault(); // CRITICAL: Prevent native browser drag/text selection
+    e.preventDefault();
     isDrawing = true;
     lastPos = getMousePos(e);
     startPos = lastPos;
@@ -471,12 +504,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (currentTool === 'crop' || currentTool === 'scan') {
       ctx.putImageData(previewState, 0, 0);
       
-      // Draw dark overlay
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(0, 0, annotationCanvas.width, annotationCanvas.height);
       
-      // Cut out selection box
       const rx = Math.min(startPos.x, pos.x);
       const ry = Math.min(startPos.y, pos.y);
       const rw = Math.abs(pos.x - startPos.x);
@@ -486,7 +517,6 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.fillStyle = 'rgba(0, 0, 0, 1)';
       ctx.fillRect(rx, ry, rw, rh);
       
-      // Draw border
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = currentTool === 'scan' ? '#0078D4' : '#fff';
       ctx.lineWidth = 2;
@@ -495,7 +525,6 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.setLineDash([]);
     }
     
-    // Always update lastPos for shapes, crop, and scan
     if (['rect', 'circle', 'line', 'arrow', 'crop', 'scan'].includes(currentTool)) {
       lastPos = pos;
     }
@@ -506,9 +535,10 @@ document.addEventListener('DOMContentLoaded', () => {
       isDrawing = false;
       
       if (currentTool === 'crop' || currentTool === 'scan') {
-        ctx.putImageData(previewState, 0, 0); // CRITICAL: Clear dark overlay before extracting pixels
+        if (previewState) {
+          ctx.putImageData(previewState, 0, 0);
+        }
         
-        // Use current mouse position to finish the crop/scan if they released outside
         let finalPos;
         if (e && e.clientX) {
            finalPos = getMousePos(e);
@@ -529,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
       } else {
-        saveState();
+        saveState(false);
       }
     }
   };

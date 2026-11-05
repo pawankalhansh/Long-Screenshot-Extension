@@ -1,10 +1,22 @@
 document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get('captureData', (data) => {
     if (data.captureData) {
+      try {
+        sessionStorage.setItem('lsLastCaptureData', JSON.stringify(data.captureData));
+      } catch (e) {
+        console.warn("Could not cache to sessionStorage:", e);
+      }
       processCapture(data.captureData);
-      // Optional: Clear storage to free memory
-      chrome.storage.local.remove('captureData');
     } else {
+      const cached = sessionStorage.getItem('lsLastCaptureData');
+      if (cached) {
+        try {
+          processCapture(JSON.parse(cached));
+          return;
+        } catch (e) {
+          console.error("Failed to parse cached capture data:", e);
+        }
+      }
       document.getElementById('loading').textContent = 'No capture data found.';
     }
   });
@@ -16,103 +28,125 @@ async function processCapture(data) {
   const loading = document.getElementById('loading');
   const dpr = data.dpr || 1;
 
-  if (data.type === 'visible') {
-    const img = await loadImage(data.image);
-    canvas.width = img.width;
-    canvas.height = img.height;
-    ctx.drawImage(img, 0, 0);
-  } 
-  else if (data.type === 'area') {
-    const img = await loadImage(data.image);
-    const rect = data.rect;
-    
-    const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
-    
-    const sx = Math.round(rect.x * actualDpr);
-    const sy = Math.round(rect.y * actualDpr);
-    const sWidth = Math.round(rect.width * actualDpr);
-    const sHeight = Math.round(rect.height * actualDpr);
-
-    canvas.width = sWidth;
-    canvas.height = sHeight;
-    ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
-  }
-  else if (data.type === 'full') {
-    // We have segments
-    const segments = data.segments;
-    if (segments.length === 0) return;
-    
-    const firstImg = await loadImage(segments[0].dataUrl);
-    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
-    
-    canvas.width = firstImg.width;
-    canvas.height = Math.round(data.totalHeight * actualDpr);
-
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const img = await loadImage(seg.dataUrl);
-      const dy = Math.round(seg.y * actualDpr);
+  try {
+    if (data.type === 'visible') {
+      const img = await loadImage(data.image);
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+    } 
+    else if (data.type === 'area') {
+      const img = await loadImage(data.image);
+      const rect = data.rect;
       
-      ctx.drawImage(img, 0, dy, img.width, img.height);
+      const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
+      
+      const sx = Math.max(0, Math.min(img.width - 1, Math.round(rect.x * actualDpr)));
+      const sy = Math.max(0, Math.min(img.height - 1, Math.round(rect.y * actualDpr)));
+      const sWidth = Math.max(1, Math.min(Math.round(rect.width * actualDpr), img.width - sx));
+      const sHeight = Math.max(1, Math.min(Math.round(rect.height * actualDpr), img.height - sy));
+
+      canvas.width = sWidth;
+      canvas.height = sHeight;
+      ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
     }
-  }
-  else if (data.type === 'area_stitched') {
-    const segments = data.segments;
-    if (segments.length === 0) return;
-    
-    const firstImg = await loadImage(segments[0].dataUrl);
-    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
-    
-    canvas.width = Math.round(data.contentWidth * actualDpr);
-    canvas.height = Math.round(data.contentHeight * actualDpr);
-    
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const img = await loadImage(seg.dataUrl);
+    else if (data.type === 'full') {
+      const segments = data.segments;
+      if (segments.length === 0) return;
       
-      // Viewport bounds in content space (Vertical only)
-      const viewportTop = seg.y;
-      const viewportBottom = seg.y + data.viewportHeight;
-      
-      // Selection bounds in content space
-      const contentTop = data.contentTop;
-      const contentBottom = data.contentTop + data.contentHeight;
-      
-      // Intersection in content space (Vertical only)
-      const intersectTop = Math.max(contentTop, viewportTop);
-      const intersectBottom = Math.min(contentBottom, viewportBottom);
-      
-      if (intersectBottom > intersectTop) {
-        // Screen X of the selection's left edge
-        // boundsLeft is the scroller's on-screen X.
-        // contentLeft is the selection's X relative to the scroller's content.
-        // seg.x is the scroller's scrollLeft.
-        const screenX = data.boundsLeft + data.contentLeft - seg.x;
-        
-        // Screen Y of the current intersecting slice
-        const screenY = data.boundsTop + (intersectTop - seg.y);
-        
-        // Image coordinates to crop from
-        const sx = Math.max(0, Math.round(screenX * actualDpr));
-        const sy = Math.max(0, Math.round(screenY * actualDpr));
-        const sWidth = Math.round(data.contentWidth * actualDpr);
-        const sHeight = Math.round((intersectBottom - intersectTop) * actualDpr);
-        
-        // Canvas coordinates to draw to
-        const dx = 0; // Always draw full width of selection
-        const dy = Math.round((intersectTop - contentTop) * actualDpr);
-        
-        ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+      const firstImg = await loadImage(segments[0].dataUrl);
+      const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+      const isWindow = data.isWindow !== false;
+
+      if (isWindow) {
+        canvas.width = firstImg.width;
+        canvas.height = Math.round(data.totalHeight * actualDpr);
+
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          const img = await loadImage(seg.dataUrl);
+          const dy = Math.round(seg.y * actualDpr);
+          const dHeight = Math.min(img.height, Math.max(0, canvas.height - dy));
+          
+          if (dHeight > 0) {
+            ctx.drawImage(img, 0, 0, img.width, dHeight, 0, dy, img.width, dHeight);
+          }
+        }
+      } else {
+        // Internal container: crop each slice to container bounds
+        const cWidth = Math.round(data.viewportWidth * actualDpr);
+        canvas.width = cWidth;
+        canvas.height = Math.round(data.totalHeight * actualDpr);
+
+        const sx = Math.max(0, Math.min(firstImg.width - 1, Math.round(data.boundsLeft * actualDpr)));
+        const sy = Math.max(0, Math.min(firstImg.height - 1, Math.round(data.boundsTop * actualDpr)));
+        const sWidth = Math.max(1, Math.min(cWidth, firstImg.width - sx));
+        const sHeight = Math.max(1, Math.min(Math.round(data.viewportHeight * actualDpr), firstImg.height - sy));
+
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          const img = await loadImage(seg.dataUrl);
+          const dy = Math.round(seg.y * actualDpr);
+          const dHeight = Math.min(sHeight, Math.max(0, canvas.height - dy));
+          
+          if (dHeight > 0) {
+            ctx.drawImage(img, sx, sy, sWidth, dHeight, 0, dy, sWidth, dHeight);
+          }
+        }
       }
     }
-  }
+    else if (data.type === 'area_stitched') {
+      const segments = data.segments;
+      if (segments.length === 0) return;
+      
+      const firstImg = await loadImage(segments[0].dataUrl);
+      const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+      
+      const cWidth = Math.round(data.contentWidth * actualDpr);
+      const cHeight = Math.round(data.contentHeight * actualDpr);
+      canvas.width = cWidth;
+      canvas.height = cHeight;
+      
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const img = await loadImage(seg.dataUrl);
+        
+        const viewportTop = seg.y;
+        const viewportBottom = seg.y + data.viewportHeight;
+        
+        const contentTop = data.contentTop;
+        const contentBottom = data.contentTop + data.contentHeight;
+        
+        const intersectTop = Math.max(contentTop, viewportTop);
+        const intersectBottom = Math.min(contentBottom, viewportBottom);
+        
+        if (intersectBottom > intersectTop) {
+          const screenX = data.boundsLeft + data.contentLeft - seg.x;
+          const screenY = data.boundsTop + (intersectTop - seg.y);
+          
+          const sx = Math.max(0, Math.min(img.width - 1, Math.round(screenX * actualDpr)));
+          const sy = Math.max(0, Math.min(img.height - 1, Math.round(screenY * actualDpr)));
+          const sWidth = Math.max(1, Math.min(Math.round(data.contentWidth * actualDpr), img.width - sx));
+          const sHeight = Math.max(1, Math.min(Math.round((intersectBottom - intersectTop) * actualDpr), img.height - sy));
+          
+          const dx = 0;
+          const dy = Math.round((intersectTop - contentTop) * actualDpr);
+          
+          ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+        }
+      }
+    }
 
-  loading.style.display = 'none';
-  window.dispatchEvent(new CustomEvent('screenshot-ready'));
+    loading.style.display = 'none';
+    window.dispatchEvent(new CustomEvent('screenshot-ready'));
+  } catch (err) {
+    console.error("Error processing capture:", err);
+    loading.textContent = 'Failed to process screenshot: ' + (err.message || err);
+  }
 
   function getCombinedCanvas() {
     const annotationCanvas = document.getElementById('annotation-canvas');
-    if (!annotationCanvas || annotationCanvas.width === 0) return canvas; // Fallback if no annotations
+    if (!annotationCanvas || annotationCanvas.width === 0) return canvas;
     const combined = document.createElement('canvas');
     combined.width = canvas.width;
     combined.height = canvas.height;
@@ -122,7 +156,7 @@ async function processCapture(data) {
     return combined;
   }
 
-  // Setup download handlers
+  // Setup download and clipboard handlers
   document.getElementById('copy-image').addEventListener('click', async () => {
     const copyBtn = document.getElementById('copy-image');
     const originalText = copyBtn.textContent;
@@ -179,10 +213,9 @@ function exportCanvas(canvas, mimeType, quality, callback, scale = 1.0) {
     if (blob) {
       callback(blob);
     } else {
-      // If failed, try scaling down further
-      const nextScale = scale * 0.75; // Reduce by 25%
+      const nextScale = scale * 0.75;
       if (nextScale < 0.2) {
-        callback(null); // Too small, give up
+        callback(null);
       } else {
         console.warn(`Export failed at scale ${scale}, retrying at ${nextScale}`);
         exportCanvas(canvas, mimeType, quality, callback, nextScale);
@@ -218,7 +251,7 @@ function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onerror = (err) => reject(new Error("Failed to load image source: " + err));
     img.src = src;
   });
 }
