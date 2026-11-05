@@ -7,9 +7,20 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   let overlayHost = null;
   let shadowRoot = null;
   let isCapturingArea = false;
+  let isPickingContainer = false;
+  let hoveredContainerEl = null;
+  let lastHoveredElement = null;
   let lastToggleTime = 0;
 
-  // Inject CSS for the selection overlay
+  // Track user's active/hovered element for smart scroller targeting
+  const onGlobalMouseMove = (e) => {
+    if (!isCapturingArea && !isPickingContainer) {
+      lastHoveredElement = e.target;
+    }
+  };
+  window.addEventListener('mousemove', onGlobalMouseMove, { passive: true, capture: true });
+
+  // Inject CSS for the selection overlay and container highlight
   const style = document.createElement('style');
   style.id = 'ls-capture-style';
   style.textContent = `
@@ -32,6 +43,31 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       pointer-events: none;
       display: none;
     }
+    .ls-highlight-overlay {
+      position: fixed;
+      pointer-events: none;
+      border: 2.5px solid #0078D4;
+      background: rgba(0, 120, 212, 0.12);
+      border-radius: 8px;
+      z-index: 2147483645;
+      display: none;
+      transition: all 0.08s ease-out;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8), 0 8px 24px rgba(0, 120, 212, 0.25);
+    }
+    .ls-highlight-badge {
+      position: absolute;
+      top: -28px;
+      left: 8px;
+      background: #0078D4;
+      color: white;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 4px;
+      white-space: nowrap;
+      font-family: system-ui, -apple-system, sans-serif;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
   `;
   (document.head || document.documentElement).appendChild(style);
 
@@ -44,6 +80,15 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   captureOverlay.appendChild(captureRect);
   (document.body || document.documentElement).appendChild(captureOverlay);
 
+  const highlightOverlay = document.createElement('div');
+  highlightOverlay.id = 'ls-highlight-overlay';
+  highlightOverlay.className = 'ls-highlight-overlay';
+  const highlightBadge = document.createElement('div');
+  highlightBadge.className = 'ls-highlight-badge';
+  highlightBadge.textContent = 'Click to capture this scrolling window';
+  highlightOverlay.appendChild(highlightBadge);
+  (document.body || document.documentElement).appendChild(highlightOverlay);
+
   // Runtime message listener
   const messageListener = (request, sender, sendResponse) => {
     if (request.action === 'TOGGLE_OVERLAY') {
@@ -55,8 +100,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   chrome.runtime.onMessage.addListener(messageListener);
 
   // In-page keyboard shortcut listener
-  // Provides direct fallback for Alt+Shift+S (or Cmd+Shift+S) even if Chrome command was not registered
-  // Also handles Escape to cancel/close
   const onKeyDown = (e) => {
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
     const isShortcut = 
@@ -71,6 +114,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
 
     if (e.key === 'Escape' || e.code === 'Escape') {
+      if (isPickingContainer) {
+        e.preventDefault();
+        e.stopPropagation();
+        stopContainerPicker();
+        return;
+      }
       if (overlayHost || isCapturingArea) {
         e.preventDefault();
         e.stopPropagation();
@@ -81,9 +130,27 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   };
   window.addEventListener('keydown', onKeyDown, true);
 
+  // Helper to traverse DOM and Shadow Roots to find scrollable container
+  function getScrollableContainer(el) {
+    let curr = el;
+    while (curr && curr !== document.documentElement && curr !== document.body) {
+      if (curr.nodeType === Node.ELEMENT_NODE) {
+        const style = window.getComputedStyle(curr);
+        const oy = style.overflowY;
+        const isScrollableY = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && 
+                             (curr.scrollHeight > curr.clientHeight + 15);
+        if (isScrollableY) {
+          return curr;
+        }
+      }
+      // Traverse up standard DOM or across Shadow Root boundaries
+      curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
+    }
+    return null;
+  }
+
   function toggleToolbar() {
     const now = Date.now();
-    // Debounce to prevent immediate open/close if both DOM shortcut and Chrome command fire
     if (now - lastToggleTime < 350) {
       return;
     }
@@ -92,6 +159,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     if (overlayHost) {
       removeToolbar();
       stopAreaCapture();
+      stopContainerPicker();
       return;
     }
 
@@ -104,15 +172,15 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     const toolbarStyle = document.createElement('style');
     toolbarStyle.textContent = `
       .toolbar {
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
+        background: rgba(255, 255, 255, 0.96);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
         border: 1px solid rgba(0, 0, 0, 0.12);
-        border-radius: 10px;
-        padding: 6px 10px;
+        border-radius: 12px;
+        padding: 6px 12px;
         display: flex;
         gap: 8px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
         align-items: center;
         user-select: none;
       }
@@ -133,6 +201,10 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       button:hover {
         background: rgba(0, 0, 0, 0.06);
         color: #000;
+      }
+      button.active {
+        background: #e0f2fe;
+        color: #0284c7;
       }
       .divider {
         width: 1px;
@@ -158,13 +230,15 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     const iconArea = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 4h-4v2h6v-6h-2v4z"/></svg>`;
     const iconVisible = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/></svg>`;
+    const iconContainer = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5M12 15l2 2 2-2M14 17v-4"/></svg>`;
     const iconFull = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 13l5 5 5-5M12 18V6"/></svg>`;
     const iconClose = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
 
     toolbar.innerHTML = `
       <button id="btn-area" title="Drag to select specific area (Esc to cancel)">${iconArea} Capture area</button>
       <button id="btn-visible" title="Capture visible screen">${iconVisible} Capture visible</button>
-      <button id="btn-full" title="Capture full scrollable page">${iconFull} Capture full page</button>
+      <button id="btn-container" title="Click any scrolling chat, modal, or box to capture entire content">${iconContainer} Capture scroll box</button>
+      <button id="btn-full" title="Capture entire webpage or main feed">${iconFull} Capture full page</button>
       <div class="divider"></div>
       <button id="btn-close" class="close-btn" title="Close (Esc)">${iconClose}</button>
     `;
@@ -176,21 +250,30 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     // Event Listeners
     shadowRoot.getElementById('btn-area').addEventListener('click', (e) => {
       e.stopPropagation();
+      stopContainerPicker();
       stopAreaCapture();
       startAreaCapture();
     });
     shadowRoot.getElementById('btn-visible').addEventListener('click', (e) => {
       e.stopPropagation();
+      stopContainerPicker();
       stopAreaCapture();
       startVisibleCapture();
     });
+    shadowRoot.getElementById('btn-container').addEventListener('click', (e) => {
+      e.stopPropagation();
+      stopAreaCapture();
+      startContainerPicker();
+    });
     shadowRoot.getElementById('btn-full').addEventListener('click', (e) => {
       e.stopPropagation();
+      stopContainerPicker();
       stopAreaCapture();
       startFullPageCapture();
     });
     shadowRoot.getElementById('btn-close').addEventListener('click', (e) => {
       e.stopPropagation();
+      stopContainerPicker();
       stopAreaCapture();
       removeToolbar();
     });
@@ -207,13 +290,93 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
   }
 
+  // --- Interactive Container Picker Mode ---
+  function startContainerPicker() {
+    stopAreaCapture();
+    isPickingContainer = true;
+
+    const toolbar = shadowRoot ? shadowRoot.querySelector('.toolbar') : null;
+    if (toolbar) {
+      const iconClose = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
+      toolbar.innerHTML = `
+        <span style="font-size: 13.5px; font-weight: 500; color: #0078D4; padding: 4px 8px;">
+          Hover & click any scrolling window/chat to capture
+        </span>
+        <div class="divider"></div>
+        <button id="btn-cancel-pick" class="close-btn" title="Cancel (Esc)">${iconClose}</button>
+      `;
+      shadowRoot.getElementById('btn-cancel-pick').addEventListener('click', stopContainerPicker);
+    }
+
+    highlightOverlay.style.display = 'none';
+    window.addEventListener('mousemove', onPickerMouseMove, true);
+    window.addEventListener('click', onPickerClick, true);
+  }
+
+  function stopContainerPicker() {
+    isPickingContainer = false;
+    highlightOverlay.style.display = 'none';
+    window.removeEventListener('mousemove', onPickerMouseMove, true);
+    window.removeEventListener('click', onPickerClick, true);
+    removeToolbar();
+  }
+
+  function onPickerMouseMove(e) {
+    if (!isPickingContainer) return;
+    if (overlayHost && (e.composedPath().includes(overlayHost) || overlayHost.contains(e.target))) {
+      highlightOverlay.style.display = 'none';
+      return;
+    }
+
+    const elements = document.elementsFromPoint(e.clientX, e.clientY);
+    let target = null;
+    for (let el of elements) {
+      if (el === highlightOverlay || el === captureOverlay) continue;
+      const container = getScrollableContainer(el);
+      if (container && container !== document.body && container !== document.documentElement) {
+        target = container;
+        break;
+      }
+    }
+
+    hoveredContainerEl = target;
+
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      highlightOverlay.style.left = rect.left + 'px';
+      highlightOverlay.style.top = rect.top + 'px';
+      highlightOverlay.style.width = rect.width + 'px';
+      highlightOverlay.style.height = rect.height + 'px';
+      highlightOverlay.style.display = 'block';
+    } else {
+      highlightOverlay.style.display = 'none';
+    }
+  }
+
+  function onPickerClick(e) {
+    if (!isPickingContainer) return;
+    if (overlayHost && (e.composedPath().includes(overlayHost) || overlayHost.contains(e.target))) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const target = hoveredContainerEl;
+    stopContainerPicker();
+
+    if (target) {
+      captureScrollContainer(target);
+    }
+  }
+
   async function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async function startVisibleCapture() {
     removeToolbar();
-    await wait(150); // wait for UI to disappear
+    await wait(150);
     
     chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
       if (response && response.dataUrl) {
@@ -241,8 +404,22 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getScrollHeight: () => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement.scrollHeight),
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
-        scrollTo: (x, y) => { se.scrollLeft = x; se.scrollTop = y; },
-        scrollBy: (x, y) => { se.scrollLeft += x; se.scrollTop += y; },
+        scrollTo: (x, y) => { 
+          se.scrollLeft = x; 
+          se.scrollTop = y;
+          try {
+            window.dispatchEvent(new Event('scroll'));
+            se.dispatchEvent(new Event('scroll', { bubbles: true }));
+          } catch (e) {}
+        },
+        scrollBy: (x, y) => { 
+          se.scrollLeft += x; 
+          se.scrollTop += y;
+          try {
+            window.dispatchEvent(new Event('scroll'));
+            se.dispatchEvent(new Event('scroll', { bubbles: true }));
+          } catch (e) {}
+        },
         hideScrollbar: () => {
           const styleEl = document.createElement('style');
           styleEl.textContent = `
@@ -261,8 +438,20 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getScrollHeight: () => element.scrollHeight,
         getViewportHeight: () => element.clientHeight,
         getViewportWidth: () => element.clientWidth,
-        scrollTo: (x, y) => { element.scrollLeft = x; element.scrollTop = y; },
-        scrollBy: (x, y) => { element.scrollLeft += x; element.scrollTop += y; },
+        scrollTo: (x, y) => { 
+          element.scrollLeft = x; 
+          element.scrollTop = y;
+          try {
+            element.dispatchEvent(new Event('scroll', { bubbles: true }));
+          } catch (e) {}
+        },
+        scrollBy: (x, y) => { 
+          element.scrollLeft += x; 
+          element.scrollTop += y;
+          try {
+            element.dispatchEvent(new Event('scroll', { bubbles: true }));
+          } catch (e) {}
+        },
         hideScrollbar: () => {
           const origScrollbarWidth = element.style.scrollbarWidth;
           element.style.scrollbarWidth = 'none';
@@ -304,12 +493,10 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           el.scrollTop = orig;
           return true;
         }
-        se_test: {
-          el.scrollTop = orig - 1;
-          const moved = el.scrollTop !== orig;
-          el.scrollTop = orig;
-          return moved;
-        }
+        el.scrollTop = orig - 1;
+        const moved = el.scrollTop !== orig;
+        el.scrollTop = orig;
+        return moved;
       }
     }
 
@@ -319,6 +506,25 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         return se.scrollHeight - se.clientHeight;
       }
       return el.scrollHeight - el.clientHeight;
+    }
+
+    // First check if active or hovered element is inside a scroll container
+    if (lastHoveredElement) {
+      const hoveredContainer = getScrollableContainer(lastHoveredElement);
+      if (hoveredContainer && isScrollable(hoveredContainer)) {
+        return hoveredContainer;
+      }
+    }
+
+    // Check visible modals/dialogs with scrollable elements
+    const modals = document.querySelectorAll('[role="dialog"], [role="region"], [aria-modal="true"]');
+    for (let modal of modals) {
+      if (modal.offsetParent !== null) { // visible
+        const container = getScrollableContainer(modal) || modal.querySelector('[style*="overflow"]');
+        if (container && isScrollable(container)) {
+          return container;
+        }
+      }
     }
 
     const elements = document.querySelectorAll('*');
@@ -349,7 +555,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       const el = elements[i];
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
       if (el === document.documentElement || el === document.body) continue;
-      // Do not hide the scroller itself or any ancestor containing the scroller
       if (scrollerElement && (el === scrollerElement || el.contains(scrollerElement))) continue;
       
       const style = window.getComputedStyle(el);
@@ -357,7 +562,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       
       if (style.position === 'fixed' || style.position === 'sticky') {
         const rect = el.getBoundingClientRect();
-        // Ignore large layout containers (>70% of viewport) to avoid blanking out the whole site
         if (rect.height > window.innerHeight * 0.7 && rect.width > window.innerWidth * 0.7) {
           continue;
         }
@@ -387,11 +591,10 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   function findScrollerForPoint(x, y) {
     const elements = document.elementsFromPoint(x, y);
     for (let el of elements) {
-      if (el === document.documentElement || el === document.body) continue;
-      const style = window.getComputedStyle(el);
-      const overflowY = style.overflowY;
-      if ((overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && el.scrollHeight > el.clientHeight) {
-        return el;
+      if (el === captureOverlay || el === captureRect || el === highlightOverlay) continue;
+      const scrollable = getScrollableContainer(el);
+      if (scrollable) {
+        return scrollable;
       }
     }
     return findMainScroller();
@@ -434,7 +637,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   function onMouseDown(e) {
     if (!isCapturingArea) return;
     
-    // Ignore clicks inside the toolbar
     if (overlayHost && (e.composedPath().includes(overlayHost) || overlayHost.contains(e.target))) {
       return;
     }
@@ -534,7 +736,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       const contentWidth = Math.abs(contentCurrentX - contentStartX);
       const contentHeight = Math.abs(contentCurrentY - contentStartY);
       
-      // Fixed overlay uses viewport/client coordinates directly
       const screenX = boundsLeft + (contentLeft - activeScroller.getScrollLeft());
       const screenY = boundsTop + (contentTop - activeScroller.getScrollTop());
       
@@ -569,7 +770,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     const finalScroller = activeScroller; 
     
-    // Check if selection is entirely within the current viewport
     const currentScrollX = finalScroller.getScrollLeft();
     const currentScrollY = finalScroller.getScrollTop();
     const vWidth = finalScroller.getViewportWidth();
@@ -653,7 +853,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
         
         if (!response || !response.dataUrl) {
-          console.error("Capture segment failed:", response);
           break;
         }
         
@@ -676,10 +875,16 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-        await wait(300);
+        await wait(350);
         
         if (scroller.getScrollTop() === previousScrollY) {
-          break; 
+          // Retry once for dynamic lazy load
+          await wait(400);
+          scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
+          await wait(350);
+          if (scroller.getScrollTop() === previousScrollY) {
+            break; 
+          }
         }
       }
     } finally {
@@ -712,11 +917,100 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     });
   }
 
-  // --- Full Page Capture Logic ---
+  // --- Specific Scroll Container Capture (e.g. Google AI Overview chat, Twitter thread) ---
+  async function captureScrollContainer(targetElement) {
+    removeToolbar();
+    stopContainerPicker();
+    
+    const scroller = createScroller(targetElement);
+    const originalScrollTop = scroller.getScrollTop();
+    const originalScrollLeft = scroller.getScrollLeft();
+    const restoreScrollbar = scroller.hideScrollbar();
+    
+    const bounds = targetElement.getBoundingClientRect();
+    const boundsTop = bounds.top;
+    const boundsLeft = bounds.left;
+    const viewportWidth = bounds.width;
+    const viewportHeight = bounds.height;
+    
+    let totalHeight = scroller.getScrollHeight();
+    
+    scroller.scrollTo(scroller.getScrollLeft(), 0);
+    await wait(350);
+    
+    const segments = [];
+    const restoreCallbacks = [];
+    const MAX_CONTAINER_SEGMENTS = 50;
+    let maxReachedY = 0;
+    
+    try {
+      while (segments.length < MAX_CONTAINER_SEGMENTS) {
+        const response = await new Promise(resolve => {
+          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
+        });
+        
+        if (!response || !response.dataUrl) {
+          break;
+        }
+        
+        segments.push({
+          y: scroller.getScrollTop(),
+          dataUrl: response.dataUrl
+        });
+
+        maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
+        
+        const previousScrollY = scroller.getScrollTop();
+        scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
+        await wait(400);
+        
+        if (scroller.getScrollTop() === previousScrollY) {
+          // Retry for virtualized or network loaded messages
+          await wait(500);
+          scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
+          await wait(400);
+          if (scroller.getScrollTop() === previousScrollY) {
+            break;
+          }
+        }
+      }
+    } finally {
+      while (restoreCallbacks.length > 0) {
+        const restore = restoreCallbacks.pop();
+        try { restore(); } catch (e) { console.error(e); }
+      }
+      restoreScrollbar();
+      scroller.scrollTo(originalScrollLeft, originalScrollTop);
+    }
+    
+    if (segments.length === 0) return;
+    
+    totalHeight = Math.max(totalHeight, maxReachedY);
+
+    chrome.runtime.sendMessage({
+      action: 'OPEN_RESULT',
+      payload: {
+        type: 'full',
+        segments: segments,
+        totalHeight: totalHeight,
+        viewportHeight: viewportHeight,
+        viewportWidth: viewportWidth,
+        boundsTop: boundsTop,
+        boundsLeft: boundsLeft,
+        dpr: window.devicePixelRatio,
+        windowWidth: window.innerWidth,
+        isWindow: false
+      }
+    });
+  }
+
+  // --- Full Page Capture Logic (Supports Twitter & Infinite Feeds) ---
   async function startFullPageCapture() {
     removeToolbar();
+    stopContainerPicker();
     
-    const scroller = createScroller(findMainScroller());
+    const targetElement = findMainScroller();
+    const scroller = createScroller(targetElement);
     
     const originalScrollTop = scroller.getScrollTop();
     const originalScrollLeft = scroller.getScrollLeft();
@@ -736,11 +1030,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
 
     scroller.scrollTo(isWindowScroller ? 0 : scroller.getScrollLeft(), 0);
-    await wait(300); 
+    await wait(350); 
     
     const segments = [];
     const restoreCallbacks = [];
     const MAX_FULL_SEGMENTS = 50;
+    let maxReachedY = 0;
     
     try {
       while (segments.length < MAX_FULL_SEGMENTS) {
@@ -755,7 +1050,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
         
         if (!response || !response.dataUrl) {
-          console.error("Capture segment failed:", response);
           break;
         }
         
@@ -763,6 +1057,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           y: scroller.getScrollTop(),
           dataUrl: response.dataUrl
         });
+
+        maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
         
         if (segments.length === 1) {
           const restore = hideFixedElements(scroller.element);
@@ -772,10 +1068,19 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-        await wait(300); 
+        
+        // Wait for dynamic render & Twitter virtualizer
+        await wait(450); 
         
         if (scroller.getScrollTop() === previousScrollY) {
-          break;
+          // Twitter / infinite feed retry: wait for network & virtualizer
+          await wait(600);
+          scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
+          await wait(450);
+          
+          if (scroller.getScrollTop() === previousScrollY) {
+            break;
+          }
         }
       }
     } finally {
@@ -789,7 +1094,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     if (segments.length === 0) return;
     
-    totalHeight = Math.max(totalHeight, scroller.getScrollHeight());
+    totalHeight = Math.max(totalHeight, maxReachedY);
 
     chrome.runtime.sendMessage({
       action: 'OPEN_RESULT',
@@ -808,17 +1113,21 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     });
   }
 
-  // Save instance cleanup hook for hot-reloads / reinjections
+  // Save instance cleanup hook
   window.__lsCaptureInstance = {
     destroy: () => {
       stopAreaCapture();
+      stopContainerPicker();
       removeToolbar();
       const existingOverlay = document.getElementById('ls-capture-overlay');
       if (existingOverlay) existingOverlay.remove();
       const existingStyle = document.getElementById('ls-capture-style');
       if (existingStyle) existingStyle.remove();
+      const existingHighlight = document.getElementById('ls-highlight-overlay');
+      if (existingHighlight) existingHighlight.remove();
       chrome.runtime.onMessage.removeListener(messageListener);
       window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('mousemove', onGlobalMouseMove, true);
     }
   };
 })();
