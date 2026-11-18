@@ -65,27 +65,49 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'CAPTURE_VISIBLE_TAB') {
+    let responded = false;
+    const safeSendResponse = (data) => {
+      if (!responded) {
+        responded = true;
+        try { sendResponse(data); } catch (e) {}
+      }
+    };
+
+    const safetyTimer = setTimeout(() => {
+      safeSendResponse({ error: "Capture timeout in background" });
+    }, 4000);
+
     const targetWindowId = (sender && sender.tab && sender.tab.windowId) ? sender.tab.windowId : null;
     const format = request.format || 'jpeg';
     const quality = request.quality || 95;
     const captureOptions = (format === 'png') ? { format: 'png' } : { format: 'jpeg', quality: quality };
 
-    chrome.tabs.captureVisibleTab(targetWindowId, captureOptions, (dataUrl) => {
-      if (chrome.runtime.lastError) {
-        console.warn("Window-specific capture failed, falling back to null:", chrome.runtime.lastError.message);
-        
-        chrome.tabs.captureVisibleTab(null, captureOptions, (fallbackUrl) => {
-          if (chrome.runtime.lastError) {
-            console.error("Fallback capture also failed:", chrome.runtime.lastError.message);
-            sendResponse({ error: chrome.runtime.lastError.message });
-            return;
+    try {
+      chrome.tabs.captureVisibleTab(targetWindowId, captureOptions, (dataUrl) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Window-specific capture failed, trying null fallback:", chrome.runtime.lastError.message);
+          try {
+            chrome.tabs.captureVisibleTab(null, captureOptions, (fallbackUrl) => {
+              clearTimeout(safetyTimer);
+              if (chrome.runtime.lastError) {
+                safeSendResponse({ error: chrome.runtime.lastError.message });
+              } else {
+                safeSendResponse({ dataUrl: fallbackUrl });
+              }
+            });
+          } catch (fallbackErr) {
+            clearTimeout(safetyTimer);
+            safeSendResponse({ error: fallbackErr.message });
           }
-          sendResponse({ dataUrl: fallbackUrl });
-        });
-        return;
-      }
-      sendResponse({ dataUrl: dataUrl });
-    });
+          return;
+        }
+        clearTimeout(safetyTimer);
+        safeSendResponse({ dataUrl: dataUrl });
+      });
+    } catch (err) {
+      clearTimeout(safetyTimer);
+      safeSendResponse({ error: err.message });
+    }
     return true; 
   }
 

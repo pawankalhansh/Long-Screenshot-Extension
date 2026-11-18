@@ -398,7 +398,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         border-radius: 9999px !important;
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.15) !important;
         pointer-events: none !important;
-        display: flex !important;
+        display: none;
         align-items: center !important;
         gap: 8px !important;
         transition: opacity 0.15s ease !important;
@@ -406,12 +406,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       (document.body || document.documentElement).appendChild(statusBadgeEl);
     }
     statusBadgeEl.textContent = text;
-    statusBadgeEl.style.display = 'flex';
+    statusBadgeEl.style.setProperty('display', 'flex', 'important');
   }
 
   function hideStatusBadge() {
     if (statusBadgeEl) {
-      statusBadgeEl.style.display = 'none';
+      statusBadgeEl.style.setProperty('display', 'none', 'important');
     }
   }
 
@@ -420,6 +420,53 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       statusBadgeEl.remove();
       statusBadgeEl = null;
     }
+  }
+
+  // Safe tab capture with per-request timeout and rate-limit retries
+  async function captureTabSafe(format = 'jpeg', quality = 95) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (cancelScrollingCapture) return null;
+
+      const res = await new Promise((resolve) => {
+        let done = false;
+        const timer = setTimeout(() => {
+          if (!done) {
+            done = true;
+            console.warn("Capture tab timed out after 3500ms");
+            resolve({ error: "timeout" });
+          }
+        }, 3500);
+
+        try {
+          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format, quality }, (response) => {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              if (chrome.runtime.lastError) {
+                resolve({ error: chrome.runtime.lastError.message });
+              } else {
+                resolve(response || { error: "no response" });
+              }
+            }
+          });
+        } catch (e) {
+          if (!done) {
+            done = true;
+            clearTimeout(timer);
+            resolve({ error: e.message });
+          }
+        }
+      });
+
+      if (res && res.dataUrl) {
+        return res.dataUrl;
+      }
+
+      console.warn(`Capture tab attempt ${attempt + 1} failed:`, res ? res.error : 'unknown');
+      if (cancelScrollingCapture) return null;
+      await wait(700);
+    }
+    return null;
   }
 
   async function saveAndOpenResult(payload) {
@@ -451,18 +498,19 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     removeToolbar();
     await wait(150);
     
-    chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'png' }, async (response) => {
-      if (response && response.dataUrl) {
-        await saveAndOpenResult({
-          type: 'visible',
-          image: response.dataUrl,
-          dpr: window.devicePixelRatio,
-          windowWidth: window.innerWidth
-        });
-      } else {
-        alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
-      }
-    });
+    showStatusBadge("Capturing visible screen...");
+    const dataUrl = await captureTabSafe('png');
+    if (dataUrl) {
+      await saveAndOpenResult({
+        type: 'visible',
+        image: dataUrl,
+        dpr: window.devicePixelRatio,
+        windowWidth: window.innerWidth
+      });
+    } else {
+      removeStatusBadge();
+      alert("Screenshot failed. Could not capture tab.");
+    }
   }
 
   // --- Scroller Abstraction ---
@@ -477,9 +525,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
         scrollTo: (x, y) => { 
-          try { window.scrollTo(x, y); } catch (e) {}
-          se.scrollLeft = x; 
-          se.scrollTop = y;
+          try { window.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+            try { window.scrollTo(x, y); } catch (e2) {}
+          }
+          try { se.scrollLeft = x; se.scrollTop = y; } catch (e) {}
+          if (document.body) {
+            try { document.body.scrollLeft = x; document.body.scrollTop = y; } catch (e) {}
+          }
           try {
             window.dispatchEvent(new Event('scroll'));
             document.dispatchEvent(new Event('scroll'));
@@ -487,9 +539,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
-          try { window.scrollBy(x, y); } catch (e) {}
-          se.scrollLeft += x; 
-          se.scrollTop += y;
+          try { window.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+            try { window.scrollBy(x, y); } catch (e2) {}
+          }
+          try { se.scrollLeft += x; se.scrollTop += y; } catch (e) {}
+          if (document.body) {
+            try { document.body.scrollLeft += x; document.body.scrollTop += y; } catch (e) {}
+          }
           try {
             window.dispatchEvent(new Event('scroll'));
             document.dispatchEvent(new Event('scroll'));
@@ -499,8 +555,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         hideScrollbar: () => {
           const styleEl = document.createElement('style');
           styleEl.textContent = `
-            html, body { scrollbar-width: none !important; -ms-overflow-style: none !important; }
+            html, body { scrollbar-width: none !important; -ms-overflow-style: none !important; scroll-behavior: auto !important; }
             html::-webkit-scrollbar, body::-webkit-scrollbar { display: none !important; }
+            * { scroll-behavior: auto !important; }
           `;
           (document.head || document.documentElement).appendChild(styleEl);
           return () => styleEl.remove();
@@ -516,7 +573,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getViewportWidth: () => element.clientWidth,
         scrollTo: (x, y) => { 
           if (typeof element.scrollTo === 'function') {
-            try { element.scrollTo(x, y); } catch (e) {}
+            try { element.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+              try { element.scrollTo(x, y); } catch (e2) {}
+            }
           }
           element.scrollLeft = x; 
           element.scrollTop = y;
@@ -527,7 +586,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         },
         scrollBy: (x, y) => { 
           if (typeof element.scrollBy === 'function') {
-            try { element.scrollBy(x, y); } catch (e) {}
+            try { element.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+              try { element.scrollBy(x, y); } catch (e2) {}
+            }
           }
           element.scrollLeft += x; 
           element.scrollTop += y;
@@ -578,18 +639,24 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
 
     function isWindowScrollable() {
       const se = document.scrollingElement || document.documentElement;
-      if (se.scrollHeight <= se.clientHeight + 20) return false;
+      const body = document.body;
+      const scrollHeight = Math.max(se.scrollHeight, body ? body.scrollHeight : 0);
+      const clientHeight = Math.min(se.clientHeight, window.innerHeight);
+      if (scrollHeight > clientHeight + 40) {
+        const style = window.getComputedStyle(document.documentElement);
+        const bodyStyle = body ? window.getComputedStyle(body) : null;
+        if (style.overflowY !== 'hidden' && (!bodyStyle || bodyStyle.overflowY !== 'hidden')) {
+          return true;
+        }
+      }
       const orig = window.scrollY || se.scrollTop;
-      window.scrollTo(0, orig + 1);
+      try { window.scrollTo({ left: 0, top: orig + 1, behavior: 'instant' }); } catch (e) {}
       const newPos = window.scrollY || se.scrollTop;
       if (newPos !== orig) {
-        window.scrollTo(0, orig);
+        try { window.scrollTo({ left: 0, top: orig, behavior: 'instant' }); } catch (e) {}
         return true;
       }
-      window.scrollTo(0, orig - 1);
-      const moved = (window.scrollY || se.scrollTop) !== orig;
-      window.scrollTo(0, orig);
-      return moved;
+      return false;
     }
 
     function scrollRange(el) {
@@ -894,24 +961,25 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     await wait(100); 
     
     if (isFullyVisible) {
-      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'png' }, async (response) => {
-        if (response && response.dataUrl) {
-          await saveAndOpenResult({
-            type: 'area',
-            image: response.dataUrl,
-            rect: { 
-              x: screenX, 
-              y: screenY, 
-              width: contentWidth, 
-              height: contentHeight 
-            },
-            dpr: window.devicePixelRatio,
-            windowWidth: window.innerWidth
-          });
-        } else {
-          alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture selected area."));
-        }
-      });
+      showStatusBadge("Capturing selected area...");
+      const dataUrl = await captureTabSafe('png');
+      if (dataUrl) {
+        await saveAndOpenResult({
+          type: 'area',
+          image: dataUrl,
+          rect: { 
+            x: screenX, 
+            y: screenY, 
+            width: contentWidth, 
+            height: contentHeight 
+          },
+          dpr: window.devicePixelRatio,
+          windowWidth: window.innerWidth
+        });
+      } else {
+        removeStatusBadge();
+        alert("Screenshot failed: Could not capture selected area.");
+      }
     } else {
       await captureAreaSegments({
         left: contentLeft,
@@ -941,7 +1009,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     try {
       showStatusBadge("Preparing area capture...");
       scroller.scrollTo(area.left, area.top);
-      await wait(300);
+      await wait(350);
       
       const MAX_AREA_SEGMENTS = 50;
       
@@ -957,13 +1025,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
         
         hideStatusBadge();
-        const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
-        });
+        await wait(50);
+        const dataUrl = await captureTabSafe('jpeg', 95);
         
-        if (!response || !response.dataUrl) {
+        if (!dataUrl) {
           if (segments.length === 0) {
-            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+            alert("Screenshot failed: Could not capture tab.");
           }
           break;
         }
@@ -971,10 +1038,14 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         segments.push({
           y: scroller.getScrollTop(),
           x: scroller.getScrollLeft(),
-          dataUrl: response.dataUrl
+          dataUrl: dataUrl
         });
         
         showStatusBadge(`Capturing selection... (${segments.length}) • Esc to finish`);
+
+        if (cancelScrollingCapture) {
+          break;
+        }
 
         const scrolledSoFar = scroller.getScrollTop() - area.top;
         if (scrolledSoFar + viewportHeight >= area.height) {
@@ -983,12 +1054,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-        await wait(350);
+        await wait(650);
         
         if (scroller.getScrollTop() === previousScrollY) {
-          await wait(450);
+          await wait(750);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-          await wait(350);
+          await wait(500);
           if (scroller.getScrollTop() === previousScrollY) {
             break; 
           }
@@ -1062,32 +1133,35 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
 
         hideStatusBadge();
-        const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
-        });
+        await wait(50);
+        const dataUrl = await captureTabSafe('jpeg', 95);
         
-        if (!response || !response.dataUrl) {
+        if (!dataUrl) {
           if (segments.length === 0) {
-            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+            alert("Screenshot failed: Could not capture tab.");
           }
           break;
         }
         
         segments.push({
           y: scroller.getScrollTop(),
-          dataUrl: response.dataUrl
+          dataUrl: dataUrl
         });
 
         showStatusBadge(`Capturing scroll box... (${segments.length}) • Esc to finish`);
+
+        if (cancelScrollingCapture) {
+          break;
+        }
 
         maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-        await wait(500);
+        await wait(650);
         
         if (scroller.getScrollTop() === previousScrollY) {
-          await wait(700);
+          await wait(750);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
           await wait(500);
           if (scroller.getScrollTop() === previousScrollY) {
@@ -1176,37 +1250,40 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
         
         hideStatusBadge();
-        const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
-        });
+        await wait(50);
+        const dataUrl = await captureTabSafe('jpeg', 95);
         
-        if (!response || !response.dataUrl) {
+        if (!dataUrl) {
           if (segments.length === 0) {
-            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+            alert("Screenshot failed: Could not capture tab.");
           }
           break;
         }
         
         segments.push({
           y: scroller.getScrollTop(),
-          dataUrl: response.dataUrl
+          dataUrl: dataUrl
         });
 
         showStatusBadge(`Capturing full page... (${segments.length}) • Esc to finish`);
+
+        if (cancelScrollingCapture) {
+          break;
+        }
 
         maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
         
-        // Wait for dynamic render & Twitter/Threads virtualizer
-        await wait(500); 
+        // Wait for dynamic render & Twitter/Threads virtualizer & respect rate limit
+        await wait(650); 
         
         if (scroller.getScrollTop() === previousScrollY) {
           // Retry for virtualized feeds
-          await wait(700);
+          await wait(850);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-          await wait(500);
+          await wait(600);
           
           if (scroller.getScrollTop() === previousScrollY) {
             break;
