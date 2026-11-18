@@ -33,7 +33,6 @@ async function handleToggle(tab) {
   }
 
   try {
-    // Attempt sending message to existing content script
     await chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_OVERLAY' });
     console.log("Message sent to existing content script successfully.");
   } catch (err) {
@@ -55,7 +54,6 @@ chrome.action.onClicked.addListener((tab) => {
   handleToggle(tab);
 });
 
-// Fallback listener for commands
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === '_execute_action') {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -67,10 +65,20 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'CAPTURE_VISIBLE_TAB') {
-    chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
+    const targetWindowId = (sender && sender.tab && sender.tab.windowId) ? sender.tab.windowId : null;
+
+    chrome.tabs.captureVisibleTab(targetWindowId, { format: 'png' }, (dataUrl) => {
       if (chrome.runtime.lastError) {
-        console.error("Capture failed:", chrome.runtime.lastError);
-        sendResponse({ error: chrome.runtime.lastError.message });
+        console.warn("Window-specific capture failed, falling back to null:", chrome.runtime.lastError.message);
+        
+        chrome.tabs.captureVisibleTab(null, { format: 'png' }, (fallbackUrl) => {
+          if (chrome.runtime.lastError) {
+            console.error("Fallback capture also failed:", chrome.runtime.lastError.message);
+            sendResponse({ error: chrome.runtime.lastError.message });
+            return;
+          }
+          sendResponse({ dataUrl: fallbackUrl });
+        });
         return;
       }
       sendResponse({ dataUrl: dataUrl });
@@ -81,7 +89,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'OPEN_RESULT') {
     chrome.storage.local.set({ captureData: request.payload }, () => {
       if (chrome.runtime.lastError) {
-        console.error("Failed to store captureData:", chrome.runtime.lastError);
+        console.error("Failed to store captureData:", chrome.runtime.lastError.message);
         sendResponse({ error: chrome.runtime.lastError.message });
         return;
       }

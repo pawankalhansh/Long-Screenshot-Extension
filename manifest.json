@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Long Screenshot",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Capture full page, visible screen, or specific areas with a premium Edge-like UI.",
   "permissions": [
+    "tabs",
     "activeTab",
     "storage",
     "unlimitedStorage",

@@ -389,6 +389,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
             windowWidth: window.innerWidth
           }
         });
+      } else {
+        alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab. Make sure you are on a standard webpage and refresh."));
       }
     });
   }
@@ -810,6 +812,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
               windowWidth: window.innerWidth
             }
           });
+        } else {
+          alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture selected area."));
         }
       });
     } else {
@@ -853,6 +857,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
         
         if (!response || !response.dataUrl) {
+          if (segments.length === 0) {
+            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+          }
           break;
         }
         
@@ -950,6 +957,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
         
         if (!response || !response.dataUrl) {
+          if (segments.length === 0) {
+            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+          }
           break;
         }
         
@@ -1050,6 +1060,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
         
         if (!response || !response.dataUrl) {
+          if (segments.length === 0) {
+            alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
+          }
           break;
         }
         
