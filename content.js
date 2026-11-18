@@ -422,56 +422,26 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
   }
 
-  // Safe tab capture with per-request timeout and rate-limit retries
-  async function captureTabSafe(format = 'jpeg', quality = 95) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (cancelScrollingCapture) return null;
-
-      const res = await new Promise((resolve) => {
-        let done = false;
-        const timer = setTimeout(() => {
-          if (!done) {
-            done = true;
-            console.warn("Capture tab timed out after 3500ms");
-            resolve({ error: "timeout" });
-          }
-        }, 3500);
-
-        try {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format, quality }, (response) => {
-            if (!done) {
-              done = true;
-              clearTimeout(timer);
-              if (chrome.runtime.lastError) {
-                resolve({ error: chrome.runtime.lastError.message });
-              } else {
-                resolve(response || { error: "no response" });
-              }
-            }
-          });
-        } catch (e) {
-          if (!done) {
-            done = true;
-            clearTimeout(timer);
-            resolve({ error: e.message });
-          }
+  // Simple, reliable tab capture
+  function captureTab(format = 'jpeg', quality = 92) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format, quality }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Capture error:", chrome.runtime.lastError.message);
+          resolve(null);
+          return;
         }
+        resolve(response && response.dataUrl ? response.dataUrl : null);
       });
-
-      if (res && res.dataUrl) {
-        return res.dataUrl;
-      }
-
-      console.warn(`Capture tab attempt ${attempt + 1} failed:`, res ? res.error : 'unknown');
-      if (cancelScrollingCapture) return null;
-      await wait(700);
-    }
-    return null;
+    });
   }
+
+  const captureTabSafe = captureTab;
+  const captureTabPng = () => captureTab('png');
 
   async function saveAndOpenResult(payload) {
     try {
-      showStatusBadge("💾 Opening screenshot...");
+      showStatusBadge("Opening screenshot...");
       await new Promise((resolve, reject) => {
         chrome.storage.local.set({ captureData: payload }, () => {
           if (chrome.runtime.lastError) {
@@ -482,9 +452,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         });
       });
       removeStatusBadge();
-      chrome.runtime.sendMessage({ action: 'OPEN_RESULT_TAB' }, (res) => {
+      chrome.runtime.sendMessage({ action: 'OPEN_RESULT_TAB' }, () => {
         if (chrome.runtime.lastError) {
-          console.warn("OPEN_RESULT_TAB response error:", chrome.runtime.lastError.message);
+          console.warn("OPEN_RESULT_TAB error:", chrome.runtime.lastError.message);
         }
       });
     } catch (err) {
@@ -498,8 +468,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     removeToolbar();
     await wait(150);
     
-    showStatusBadge("Capturing visible screen...");
-    const dataUrl = await captureTabSafe('png');
+    const dataUrl = await captureTabPng();
     if (dataUrl) {
       await saveAndOpenResult({
         type: 'visible',
@@ -508,8 +477,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         windowWidth: window.innerWidth
       });
     } else {
-      removeStatusBadge();
-      alert("Screenshot failed. Could not capture tab.");
+      alert("Screenshot failed: Could not capture tab.");
     }
   }
 
@@ -525,12 +493,10 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
         scrollTo: (x, y) => { 
-          try { window.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
-            try { window.scrollTo(x, y); } catch (e2) {}
-          }
-          try { se.scrollLeft = x; se.scrollTop = y; } catch (e) {}
+          try { window.scrollTo(x, y); } catch (e) {}
+          try { se.scrollTop = y; se.scrollLeft = x; } catch (e) {}
           if (document.body) {
-            try { document.body.scrollLeft = x; document.body.scrollTop = y; } catch (e) {}
+            try { document.body.scrollTop = y; document.body.scrollLeft = x; } catch (e) {}
           }
           try {
             window.dispatchEvent(new Event('scroll'));
@@ -539,12 +505,10 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
-          try { window.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
-            try { window.scrollBy(x, y); } catch (e2) {}
-          }
-          try { se.scrollLeft += x; se.scrollTop += y; } catch (e) {}
+          try { window.scrollBy(x, y); } catch (e) {}
+          try { se.scrollTop += y; se.scrollLeft += x; } catch (e) {}
           if (document.body) {
-            try { document.body.scrollLeft += x; document.body.scrollTop += y; } catch (e) {}
+            try { document.body.scrollTop += y; document.body.scrollLeft += x; } catch (e) {}
           }
           try {
             window.dispatchEvent(new Event('scroll'));
@@ -572,26 +536,22 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getViewportHeight: () => element.clientHeight,
         getViewportWidth: () => element.clientWidth,
         scrollTo: (x, y) => { 
-          if (typeof element.scrollTo === 'function') {
-            try { element.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
-              try { element.scrollTo(x, y); } catch (e2) {}
-            }
-          }
           element.scrollLeft = x; 
           element.scrollTop = y;
+          if (typeof element.scrollTo === 'function') {
+            try { element.scrollTo(x, y); } catch (e) {}
+          }
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
             window.dispatchEvent(new Event('scroll'));
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
-          if (typeof element.scrollBy === 'function') {
-            try { element.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
-              try { element.scrollBy(x, y); } catch (e2) {}
-            }
-          }
           element.scrollLeft += x; 
           element.scrollTop += y;
+          if (typeof element.scrollBy === 'function') {
+            try { element.scrollBy(x, y); } catch (e) {}
+          }
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
             window.dispatchEvent(new Event('scroll'));
@@ -637,23 +597,20 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       return moved;
     }
 
+    // Always test actual scrolling — many SPAs (Twitter, Threads) set overflow:hidden
+    // on html/body but still scroll the window via JavaScript.
     function isWindowScrollable() {
       const se = document.scrollingElement || document.documentElement;
-      const body = document.body;
-      const scrollHeight = Math.max(se.scrollHeight, body ? body.scrollHeight : 0);
-      const clientHeight = Math.min(se.clientHeight, window.innerHeight);
-      if (scrollHeight > clientHeight + 40) {
-        const style = window.getComputedStyle(document.documentElement);
-        const bodyStyle = body ? window.getComputedStyle(body) : null;
-        if (style.overflowY !== 'hidden' && (!bodyStyle || bodyStyle.overflowY !== 'hidden')) {
-          return true;
-        }
-      }
       const orig = window.scrollY || se.scrollTop;
-      try { window.scrollTo({ left: 0, top: orig + 1, behavior: 'instant' }); } catch (e) {}
+      try { window.scrollTo({ left: 0, top: orig + 2, behavior: 'instant' }); } catch (e) {
+        try { window.scrollTo(0, orig + 2); } catch (e2) {}
+      }
+      // Read from both sources to handle quirks mode
       const newPos = window.scrollY || se.scrollTop;
       if (newPos !== orig) {
-        try { window.scrollTo({ left: 0, top: orig, behavior: 'instant' }); } catch (e) {}
+        try { window.scrollTo({ left: 0, top: orig, behavior: 'instant' }); } catch (e) {
+          try { window.scrollTo(0, orig); } catch (e2) {}
+        }
         return true;
       }
       return false;
@@ -662,20 +619,37 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     function scrollRange(el) {
       if (el === window) {
         const se = document.scrollingElement || document.documentElement;
-        return se.scrollHeight - se.clientHeight;
+        return Math.max(
+          se.scrollHeight - se.clientHeight,
+          (document.body ? document.body.scrollHeight : 0) - window.innerHeight
+        );
       }
       return el.scrollHeight - el.clientHeight;
     }
 
-    // 1. If active/hovered element is inside a verified scrollable container, prioritize it
+    // 1. Check if window itself is scrollable (covers Twitter, Threads, most sites)
+    // Always test window FIRST because most sites scroll the main document.
+    const windowCanScroll = isWindowScrollable();
+    const windowRange = windowCanScroll ? scrollRange(window) : 0;
+
+    // 2. If hovered element is inside a scrollable container, prefer it only if
+    //    it has more scroll range than the window (indicates an inner container like a chat box)
     if (lastHoveredElement) {
       const hoveredContainer = getScrollableContainer(lastHoveredElement);
       if (hoveredContainer && isElementScrollable(hoveredContainer)) {
-        return hoveredContainer;
+        const hRange = scrollRange(hoveredContainer);
+        if (hRange > windowRange) {
+          return hoveredContainer;
+        }
       }
     }
 
-    // 2. Specific selectors for popular web apps (Twitter/X and Threads)
+    // 3. If window scrolls, use it (this handles Twitter, GitHub, most pages)
+    if (windowCanScroll && windowRange > 200) {
+      return window;
+    }
+
+    // 4. Known feed selectors for apps where window scroll doesn't work
     const knownFeeds = [
       'div[data-testid="primaryColumn"]',
       'div[aria-label*="Timeline"]',
@@ -689,11 +663,11 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       }
     }
 
-    // 3. Scan DOM for actual scrollable containers (with computed overflowY === auto/scroll)
-    const elements = document.querySelectorAll('*');
-    let bestScroller = isWindowScrollable() ? window : null;
-    let bestRange = bestScroller ? scrollRange(window) : 0;
+    // 5. Scan DOM for best scrollable container
+    let bestScroller = windowCanScroll ? window : null;
+    let bestRange = windowRange;
 
+    const elements = document.querySelectorAll('*');
     for (let el of elements) {
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
       if (el === document.body || el === document.documentElement) continue;
@@ -961,8 +935,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     await wait(100); 
     
     if (isFullyVisible) {
-      showStatusBadge("Capturing selected area...");
-      const dataUrl = await captureTabSafe('png');
+      await wait(50);
+      const dataUrl = await captureTabPng();
       if (dataUrl) {
         await saveAndOpenResult({
           type: 'area',
@@ -977,7 +951,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           windowWidth: window.innerWidth
         });
       } else {
-        removeStatusBadge();
         alert("Screenshot failed: Could not capture selected area.");
       }
     } else {
