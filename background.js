@@ -66,12 +66,15 @@ chrome.commands.onCommand.addListener(async (command) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'CAPTURE_VISIBLE_TAB') {
     const targetWindowId = (sender && sender.tab && sender.tab.windowId) ? sender.tab.windowId : null;
+    const format = request.format || 'jpeg';
+    const quality = request.quality || 95;
+    const captureOptions = (format === 'png') ? { format: 'png' } : { format: 'jpeg', quality: quality };
 
-    chrome.tabs.captureVisibleTab(targetWindowId, { format: 'png' }, (dataUrl) => {
+    chrome.tabs.captureVisibleTab(targetWindowId, captureOptions, (dataUrl) => {
       if (chrome.runtime.lastError) {
         console.warn("Window-specific capture failed, falling back to null:", chrome.runtime.lastError.message);
         
-        chrome.tabs.captureVisibleTab(null, { format: 'png' }, (fallbackUrl) => {
+        chrome.tabs.captureVisibleTab(null, captureOptions, (fallbackUrl) => {
           if (chrome.runtime.lastError) {
             console.error("Fallback capture also failed:", chrome.runtime.lastError.message);
             sendResponse({ error: chrome.runtime.lastError.message });
@@ -86,6 +89,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; 
   }
 
+  // Opens result tab directly without transferring heavy image data through IPC (avoids 64MiB limit)
+  if (request.action === 'OPEN_RESULT_TAB') {
+    const createProperties = { url: 'result.html' };
+    if (sender && sender.tab && typeof sender.tab.windowId === 'number') {
+      createProperties.windowId = sender.tab.windowId;
+    }
+    chrome.tabs.create(createProperties, () => {
+      if (chrome.runtime.lastError) {
+        chrome.tabs.create({ url: 'result.html' });
+      }
+    });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Legacy fallback if payload passed
   if (request.action === 'OPEN_RESULT') {
     chrome.storage.local.set({ captureData: request.payload }, () => {
       if (chrome.runtime.lastError) {

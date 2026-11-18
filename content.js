@@ -11,6 +11,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   let hoveredContainerEl = null;
   let lastHoveredElement = null;
   let lastToggleTime = 0;
+  let isScrollingCapture = false;
+  let cancelScrollingCapture = false;
+  let statusBadgeEl = null;
 
   // Track user's active/hovered element for smart scroller targeting
   const onGlobalMouseMove = (e) => {
@@ -114,6 +117,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
 
     if (e.key === 'Escape' || e.code === 'Escape') {
+      if (isScrollingCapture) {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelScrollingCapture = true;
+        showStatusBadge("Stopping capture & saving...");
+        return;
+      }
       if (isPickingContainer) {
         e.preventDefault();
         e.stopPropagation();
@@ -130,20 +140,20 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   };
   window.addEventListener('keydown', onKeyDown, true);
 
-  // Helper to traverse DOM and Shadow Roots to find scrollable container
+  // Robust helper to find true scrollable container (checks computed overflow and Shadow Roots)
   function getScrollableContainer(el) {
     let curr = el;
     while (curr && curr !== document.documentElement && curr !== document.body) {
       if (curr.nodeType === Node.ELEMENT_NODE) {
         const style = window.getComputedStyle(curr);
         const oy = style.overflowY;
+        // Strictly check for scrollable overflow properties (reject hidden and visible)
         const isScrollableY = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && 
-                             (curr.scrollHeight > curr.clientHeight + 15);
+                             (curr.scrollHeight > curr.clientHeight + 20);
         if (isScrollableY) {
           return curr;
         }
       }
-      // Traverse up standard DOM or across Shadow Root boundaries
       curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
     }
     return null;
@@ -201,10 +211,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       button:hover {
         background: rgba(0, 0, 0, 0.06);
         color: #000;
-      }
-      button.active {
-        background: #e0f2fe;
-        color: #0284c7;
       }
       .divider {
         width: 1px;
@@ -278,7 +284,6 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       removeToolbar();
     });
     
-    // Default to area capture mode ready without removing toolbar
     startAreaCapture(true);
   }
 
@@ -374,23 +379,88 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  function showStatusBadge(text) {
+    if (!statusBadgeEl) {
+      statusBadgeEl = document.createElement('div');
+      statusBadgeEl.id = 'ls-status-badge';
+      statusBadgeEl.style.cssText = `
+        position: fixed !important;
+        bottom: 24px !important;
+        right: 24px !important;
+        z-index: 2147483647 !important;
+        background: rgba(15, 23, 42, 0.92) !important;
+        backdrop-filter: blur(8px) !important;
+        color: #ffffff !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        padding: 9px 18px !important;
+        border-radius: 9999px !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.15) !important;
+        pointer-events: none !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        transition: opacity 0.15s ease !important;
+      `;
+      (document.body || document.documentElement).appendChild(statusBadgeEl);
+    }
+    statusBadgeEl.textContent = text;
+    statusBadgeEl.style.display = 'flex';
+  }
+
+  function hideStatusBadge() {
+    if (statusBadgeEl) {
+      statusBadgeEl.style.display = 'none';
+    }
+  }
+
+  function removeStatusBadge() {
+    if (statusBadgeEl) {
+      statusBadgeEl.remove();
+      statusBadgeEl = null;
+    }
+  }
+
+  async function saveAndOpenResult(payload) {
+    try {
+      showStatusBadge("💾 Opening screenshot...");
+      await new Promise((resolve, reject) => {
+        chrome.storage.local.set({ captureData: payload }, () => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve();
+          }
+        });
+      });
+      removeStatusBadge();
+      chrome.runtime.sendMessage({ action: 'OPEN_RESULT_TAB' }, (res) => {
+        if (chrome.runtime.lastError) {
+          console.warn("OPEN_RESULT_TAB response error:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (err) {
+      removeStatusBadge();
+      console.error("Failed to save captureData:", err);
+      alert("Could not save screenshot: " + (err.message || err));
+    }
+  }
+
   async function startVisibleCapture() {
     removeToolbar();
     await wait(150);
     
-    chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
+    chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'png' }, async (response) => {
       if (response && response.dataUrl) {
-        chrome.runtime.sendMessage({
-          action: 'OPEN_RESULT',
-          payload: {
-            type: 'visible',
-            image: response.dataUrl,
-            dpr: window.devicePixelRatio,
-            windowWidth: window.innerWidth
-          }
+        await saveAndOpenResult({
+          type: 'visible',
+          image: response.dataUrl,
+          dpr: window.devicePixelRatio,
+          windowWidth: window.innerWidth
         });
       } else {
-        alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab. Make sure you are on a standard webpage and refresh."));
+        alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture tab."));
       }
     });
   }
@@ -401,24 +471,28 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       const se = document.scrollingElement || document.documentElement;
       return {
         element: window,
-        getScrollTop: () => se.scrollTop,
-        getScrollLeft: () => se.scrollLeft,
-        getScrollHeight: () => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement.scrollHeight),
+        getScrollTop: () => window.scrollY || se.scrollTop,
+        getScrollLeft: () => window.scrollX || se.scrollLeft,
+        getScrollHeight: () => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement.scrollHeight, se.scrollHeight),
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
         scrollTo: (x, y) => { 
+          try { window.scrollTo(x, y); } catch (e) {}
           se.scrollLeft = x; 
           se.scrollTop = y;
           try {
             window.dispatchEvent(new Event('scroll'));
+            document.dispatchEvent(new Event('scroll'));
             se.dispatchEvent(new Event('scroll', { bubbles: true }));
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
+          try { window.scrollBy(x, y); } catch (e) {}
           se.scrollLeft += x; 
           se.scrollTop += y;
           try {
             window.dispatchEvent(new Event('scroll'));
+            document.dispatchEvent(new Event('scroll'));
             se.dispatchEvent(new Event('scroll', { bubbles: true }));
           } catch (e) {}
         },
@@ -441,17 +515,25 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         getViewportHeight: () => element.clientHeight,
         getViewportWidth: () => element.clientWidth,
         scrollTo: (x, y) => { 
+          if (typeof element.scrollTo === 'function') {
+            try { element.scrollTo(x, y); } catch (e) {}
+          }
           element.scrollLeft = x; 
           element.scrollTop = y;
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
+            window.dispatchEvent(new Event('scroll'));
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
+          if (typeof element.scrollBy === 'function') {
+            try { element.scrollBy(x, y); } catch (e) {}
+          }
           element.scrollLeft += x; 
           element.scrollTop += y;
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
+            window.dispatchEvent(new Event('scroll'));
           } catch (e) {}
         },
         hideScrollbar: () => {
@@ -473,33 +555,41 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   }
 
   function findMainScroller() {
-    function isScrollable(el) {
-      if (el === window) {
-        const se = document.scrollingElement || document.documentElement;
-        if (se.scrollHeight <= se.clientHeight + 5) return false;
-        const orig = se.scrollTop;
-        se.scrollTop = orig + 1;
-        if (se.scrollTop !== orig) {
-          se.scrollTop = orig;
-          return true;
-        }
-        se.scrollTop = orig - 1;
-        const moved = se.scrollTop !== orig;
-        se.scrollTop = orig;
-        return moved;
-      } else {
-        if (el.scrollHeight <= el.clientHeight + 5) return false;
-        const orig = el.scrollTop;
-        el.scrollTop = orig + 1;
-        if (el.scrollTop !== orig) {
-          el.scrollTop = orig;
-          return true;
-        }
-        el.scrollTop = orig - 1;
-        const moved = el.scrollTop !== orig;
-        el.scrollTop = orig;
-        return moved;
+    function isElementScrollable(el) {
+      if (!el || el === document.documentElement || el === document.body) return false;
+      const style = window.getComputedStyle(el);
+      const oy = style.overflowY;
+      if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') {
+        return false;
       }
+      if (el.scrollHeight <= el.clientHeight + 20) return false;
+      
+      const orig = el.scrollTop;
+      el.scrollTop = orig + 1;
+      if (el.scrollTop !== orig) {
+        el.scrollTop = orig;
+        return true;
+      }
+      el.scrollTop = orig - 1;
+      const moved = el.scrollTop !== orig;
+      el.scrollTop = orig;
+      return moved;
+    }
+
+    function isWindowScrollable() {
+      const se = document.scrollingElement || document.documentElement;
+      if (se.scrollHeight <= se.clientHeight + 20) return false;
+      const orig = window.scrollY || se.scrollTop;
+      window.scrollTo(0, orig + 1);
+      const newPos = window.scrollY || se.scrollTop;
+      if (newPos !== orig) {
+        window.scrollTo(0, orig);
+        return true;
+      }
+      window.scrollTo(0, orig - 1);
+      const moved = (window.scrollY || se.scrollTop) !== orig;
+      window.scrollTo(0, orig);
+      return moved;
     }
 
     function scrollRange(el) {
@@ -510,34 +600,38 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       return el.scrollHeight - el.clientHeight;
     }
 
-    // First check if active or hovered element is inside a scroll container
+    // 1. If active/hovered element is inside a verified scrollable container, prioritize it
     if (lastHoveredElement) {
       const hoveredContainer = getScrollableContainer(lastHoveredElement);
-      if (hoveredContainer && isScrollable(hoveredContainer)) {
+      if (hoveredContainer && isElementScrollable(hoveredContainer)) {
         return hoveredContainer;
       }
     }
 
-    // Check visible modals/dialogs with scrollable elements
-    const modals = document.querySelectorAll('[role="dialog"], [role="region"], [aria-modal="true"]');
-    for (let modal of modals) {
-      if (modal.offsetParent !== null) { // visible
-        const container = getScrollableContainer(modal) || modal.querySelector('[style*="overflow"]');
-        if (container && isScrollable(container)) {
-          return container;
-        }
+    // 2. Specific selectors for popular web apps (Twitter/X and Threads)
+    const knownFeeds = [
+      'div[data-testid="primaryColumn"]',
+      'div[aria-label*="Timeline"]',
+      'main[role="main"]',
+      'div[data-pressable-container="true"]'
+    ];
+    for (let sel of knownFeeds) {
+      const feed = document.querySelector(sel);
+      if (feed && isElementScrollable(feed)) {
+        return feed;
       }
     }
 
+    // 3. Scan DOM for actual scrollable containers (with computed overflowY === auto/scroll)
     const elements = document.querySelectorAll('*');
-    let bestScroller = window;
-    let bestRange = isScrollable(window) ? scrollRange(window) : 0;
+    let bestScroller = isWindowScrollable() ? window : null;
+    let bestRange = bestScroller ? scrollRange(window) : 0;
 
     for (let el of elements) {
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
       if (el === document.body || el === document.documentElement) continue;
       
-      if (el.scrollHeight > el.clientHeight + 10 && isScrollable(el)) {
+      if (isElementScrollable(el)) {
         const range = scrollRange(el);
         if (range > bestRange) {
           bestRange = range;
@@ -546,9 +640,11 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       }
     }
     
-    return bestScroller;
+    return bestScroller || window;
   }
 
+  // Safe fixed-element hiding: only hide small floating navigation bars (<=180px)!
+  // Never hide content columns, feeds (like Twitter 600px or Threads 620px), or container elements!
   function hideFixedElements(scrollerElement) {
     const hiddenElements = [];
     const elements = document.querySelectorAll('*');
@@ -557,14 +653,17 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       const el = elements[i];
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
       if (el === document.documentElement || el === document.body) continue;
-      if (scrollerElement && (el === scrollerElement || el.contains(scrollerElement))) continue;
+      if (scrollerElement && (el === scrollerElement || el.contains(scrollerElement) || scrollerElement.contains(el))) continue;
       
       const style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
       
       if (style.position === 'fixed' || style.position === 'sticky') {
         const rect = el.getBoundingClientRect();
-        if (rect.height > window.innerHeight * 0.7 && rect.width > window.innerWidth * 0.7) {
+        
+        // Only target small top headers or bottom banners!
+        const isHeaderOrFooter = (rect.height <= 180) && (rect.top <= 20 || rect.bottom >= window.innerHeight - 20);
+        if (!isHeaderOrFooter) {
           continue;
         }
 
@@ -795,22 +894,19 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     await wait(100); 
     
     if (isFullyVisible) {
-      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
+      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'png' }, async (response) => {
         if (response && response.dataUrl) {
-          chrome.runtime.sendMessage({
-            action: 'OPEN_RESULT',
-            payload: {
-              type: 'area',
-              image: response.dataUrl,
-              rect: { 
-                x: screenX, 
-                y: screenY, 
-                width: contentWidth, 
-                height: contentHeight 
-              },
-              dpr: window.devicePixelRatio,
-              windowWidth: window.innerWidth
-            }
+          await saveAndOpenResult({
+            type: 'area',
+            image: response.dataUrl,
+            rect: { 
+              x: screenX, 
+              y: screenY, 
+              width: contentWidth, 
+              height: contentHeight 
+            },
+            dpr: window.devicePixelRatio,
+            windowWidth: window.innerWidth
           });
         } else {
           alert("Screenshot failed: " + (response && response.error ? response.error : "Could not capture selected area."));
@@ -829,6 +925,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   }
 
   async function captureAreaSegments(area, scroller) {
+    isScrollingCapture = true;
+    cancelScrollingCapture = false;
+
     const originalScrollTop = scroller.getScrollTop();
     const originalScrollLeft = scroller.getScrollLeft();
     const restoreScrollbar = scroller.hideScrollbar();
@@ -840,20 +939,26 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     const restoreCallbacks = [];
     
     try {
+      showStatusBadge("Preparing area capture...");
       scroller.scrollTo(area.left, area.top);
       await wait(300);
       
       const MAX_AREA_SEGMENTS = 50;
       
       while (segments.length < MAX_AREA_SEGMENTS) {
-        if (segments.length >= 1) {
+        if (cancelScrollingCapture) {
+          break;
+        }
+
+        if (segments.length >= 1 && restoreCallbacks.length === 0) {
           const restore = hideFixedElements(scroller.element);
           if (restore) restoreCallbacks.push(restore);
           await wait(50);
         }
         
+        hideStatusBadge();
         const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
+          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
         });
         
         if (!response || !response.dataUrl) {
@@ -869,12 +974,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           dataUrl: response.dataUrl
         });
         
-        if (segments.length === 1) {
-          const restore = hideFixedElements(scroller.element);
-          if (restore) restoreCallbacks.push(restore);
-          await wait(50);
-        }
-        
+        showStatusBadge(`Capturing selection... (${segments.length}) • Esc to finish`);
+
         const scrolledSoFar = scroller.getScrollTop() - area.top;
         if (scrolledSoFar + viewportHeight >= area.height) {
           break;
@@ -885,8 +986,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         await wait(350);
         
         if (scroller.getScrollTop() === previousScrollY) {
-          // Retry once for dynamic lazy load
-          await wait(400);
+          await wait(450);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
           await wait(350);
           if (scroller.getScrollTop() === previousScrollY) {
@@ -895,6 +995,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
       }
     } finally {
+      isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
@@ -903,32 +1004,35 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       scroller.scrollTo(originalScrollLeft, originalScrollTop);
     }
     
-    if (segments.length === 0) return;
+    if (segments.length === 0) {
+      removeStatusBadge();
+      return;
+    }
 
-    chrome.runtime.sendMessage({
-      action: 'OPEN_RESULT',
-      payload: {
-        type: 'area_stitched',
-        segments: segments,
-        contentLeft: area.left,
-        contentTop: area.top,
-        contentWidth: area.width,
-        contentHeight: area.height,
-        boundsLeft: area.boundsLeft,
-        boundsTop: area.boundsTop,
-        viewportWidth: viewportWidth,
-        viewportHeight: viewportHeight,
-        dpr: window.devicePixelRatio,
-        windowWidth: window.innerWidth
-      }
+    await saveAndOpenResult({
+      type: 'area_stitched',
+      segments: segments,
+      contentLeft: area.left,
+      contentTop: area.top,
+      contentWidth: area.width,
+      contentHeight: area.height,
+      boundsLeft: area.boundsLeft,
+      boundsTop: area.boundsTop,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      dpr: window.devicePixelRatio,
+      windowWidth: window.innerWidth
     });
   }
 
-  // --- Specific Scroll Container Capture (e.g. Google AI Overview chat, Twitter thread) ---
+  // --- Specific Scroll Container Capture ---
   async function captureScrollContainer(targetElement) {
     removeToolbar();
     stopContainerPicker();
     
+    isScrollingCapture = true;
+    cancelScrollingCapture = false;
+
     const scroller = createScroller(targetElement);
     const originalScrollTop = scroller.getScrollTop();
     const originalScrollLeft = scroller.getScrollLeft();
@@ -942,6 +1046,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     let totalHeight = scroller.getScrollHeight();
     
+    showStatusBadge("Preparing scroll box capture...");
     scroller.scrollTo(scroller.getScrollLeft(), 0);
     await wait(350);
     
@@ -952,8 +1057,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     try {
       while (segments.length < MAX_CONTAINER_SEGMENTS) {
+        if (cancelScrollingCapture) {
+          break;
+        }
+
+        hideStatusBadge();
         const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
+          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
         });
         
         if (!response || !response.dataUrl) {
@@ -968,23 +1078,25 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           dataUrl: response.dataUrl
         });
 
+        showStatusBadge(`Capturing scroll box... (${segments.length}) • Esc to finish`);
+
         maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-        await wait(400);
+        await wait(500);
         
         if (scroller.getScrollTop() === previousScrollY) {
-          // Retry for virtualized or network loaded messages
-          await wait(500);
+          await wait(700);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-          await wait(400);
+          await wait(500);
           if (scroller.getScrollTop() === previousScrollY) {
             break;
           }
         }
       }
     } finally {
+      isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
@@ -993,32 +1105,35 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       scroller.scrollTo(originalScrollLeft, originalScrollTop);
     }
     
-    if (segments.length === 0) return;
+    if (segments.length === 0) {
+      removeStatusBadge();
+      return;
+    }
     
     totalHeight = Math.max(totalHeight, maxReachedY);
 
-    chrome.runtime.sendMessage({
-      action: 'OPEN_RESULT',
-      payload: {
-        type: 'full',
-        segments: segments,
-        totalHeight: totalHeight,
-        viewportHeight: viewportHeight,
-        viewportWidth: viewportWidth,
-        boundsTop: boundsTop,
-        boundsLeft: boundsLeft,
-        dpr: window.devicePixelRatio,
-        windowWidth: window.innerWidth,
-        isWindow: false
-      }
+    await saveAndOpenResult({
+      type: 'full',
+      segments: segments,
+      totalHeight: totalHeight,
+      viewportHeight: viewportHeight,
+      viewportWidth: viewportWidth,
+      boundsTop: boundsTop,
+      boundsLeft: boundsLeft,
+      dpr: window.devicePixelRatio,
+      windowWidth: window.innerWidth,
+      isWindow: false
     });
   }
 
-  // --- Full Page Capture Logic (Supports Twitter & Infinite Feeds) ---
+  // --- Full Page Capture Logic ---
   async function startFullPageCapture() {
     removeToolbar();
     stopContainerPicker();
     
+    isScrollingCapture = true;
+    cancelScrollingCapture = false;
+
     const targetElement = findMainScroller();
     const scroller = createScroller(targetElement);
     
@@ -1039,8 +1154,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       boundsLeft = bounds.left;
     }
 
+    showStatusBadge("Preparing full page capture...");
     scroller.scrollTo(isWindowScroller ? 0 : scroller.getScrollLeft(), 0);
-    await wait(350); 
+    await wait(400); 
     
     const segments = [];
     const restoreCallbacks = [];
@@ -1049,14 +1165,19 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     
     try {
       while (segments.length < MAX_FULL_SEGMENTS) {
-        if (segments.length >= 1) {
+        if (cancelScrollingCapture) {
+          break;
+        }
+
+        if (segments.length >= 1 && restoreCallbacks.length === 0) {
           const restore = hideFixedElements(scroller.element);
           if (restore) restoreCallbacks.push(restore);
           await wait(50);
         }
         
+        hideStatusBadge();
         const response = await new Promise(resolve => {
-          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
+          chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format: 'jpeg', quality: 95 }, resolve);
         });
         
         if (!response || !response.dataUrl) {
@@ -1071,25 +1192,21 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           dataUrl: response.dataUrl
         });
 
+        showStatusBadge(`Capturing full page... (${segments.length}) • Esc to finish`);
+
         maxReachedY = Math.max(maxReachedY, scroller.getScrollTop() + viewportHeight);
-        
-        if (segments.length === 1) {
-          const restore = hideFixedElements(scroller.element);
-          if (restore) restoreCallbacks.push(restore);
-          await wait(50);
-        }
         
         const previousScrollY = scroller.getScrollTop();
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
         
-        // Wait for dynamic render & Twitter virtualizer
-        await wait(450); 
+        // Wait for dynamic render & Twitter/Threads virtualizer
+        await wait(500); 
         
         if (scroller.getScrollTop() === previousScrollY) {
-          // Twitter / infinite feed retry: wait for network & virtualizer
-          await wait(600);
+          // Retry for virtualized feeds
+          await wait(700);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-          await wait(450);
+          await wait(500);
           
           if (scroller.getScrollTop() === previousScrollY) {
             break;
@@ -1097,6 +1214,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
       }
     } finally {
+      isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
@@ -1105,30 +1223,33 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       scroller.scrollTo(originalScrollLeft, originalScrollTop);
     }
     
-    if (segments.length === 0) return;
+    if (segments.length === 0) {
+      removeStatusBadge();
+      return;
+    }
     
     totalHeight = Math.max(totalHeight, maxReachedY);
 
-    chrome.runtime.sendMessage({
-      action: 'OPEN_RESULT',
-      payload: {
-        type: 'full',
-        segments: segments,
-        totalHeight: totalHeight,
-        viewportHeight: viewportHeight,
-        viewportWidth: viewportWidth,
-        boundsTop: boundsTop,
-        boundsLeft: boundsLeft,
-        dpr: window.devicePixelRatio,
-        windowWidth: window.innerWidth,
-        isWindow: isWindowScroller
-      }
+    await saveAndOpenResult({
+      type: 'full',
+      segments: segments,
+      totalHeight: totalHeight,
+      viewportHeight: viewportHeight,
+      viewportWidth: viewportWidth,
+      boundsTop: boundsTop,
+      boundsLeft: boundsLeft,
+      dpr: window.devicePixelRatio,
+      windowWidth: window.innerWidth,
+      isWindow: isWindowScroller
     });
   }
 
   // Save instance cleanup hook
   window.__lsCaptureInstance = {
     destroy: () => {
+      isScrollingCapture = false;
+      cancelScrollingCapture = false;
+      removeStatusBadge();
       stopAreaCapture();
       stopContainerPicker();
       removeToolbar();

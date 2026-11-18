@@ -59,11 +59,10 @@ async function processCapture(data) {
       const isWindow = data.isWindow !== false;
       const lastSeg = segments[segments.length - 1];
       const minCanvasHeight = Math.round((lastSeg.y + data.viewportHeight) * actualDpr);
-      const computedHeight = Math.round(data.totalHeight * actualDpr);
-      const finalCanvasHeight = Math.max(computedHeight, minCanvasHeight);
+      const finalCanvasHeight = Math.min(minCanvasHeight, 32767);
 
       if (isWindow) {
-        canvas.width = firstImg.width;
+        canvas.width = Math.min(firstImg.width, 16384);
         canvas.height = finalCanvasHeight;
 
         for (let i = 0; i < segments.length; i++) {
@@ -79,7 +78,7 @@ async function processCapture(data) {
       } else {
         // Internal container: crop each slice to container bounds
         const cWidth = Math.round(data.viewportWidth * actualDpr);
-        canvas.width = cWidth;
+        canvas.width = Math.min(cWidth, 16384);
         canvas.height = finalCanvasHeight;
 
         const sx = Math.max(0, Math.min(firstImg.width - 1, Math.round(data.boundsLeft * actualDpr)));
@@ -106,8 +105,8 @@ async function processCapture(data) {
       const firstImg = await loadImage(segments[0].dataUrl);
       const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
       
-      const cWidth = Math.round(data.contentWidth * actualDpr);
-      const cHeight = Math.round(data.contentHeight * actualDpr);
+      const cWidth = Math.min(Math.round(data.contentWidth * actualDpr), 16384);
+      const cHeight = Math.min(Math.round(data.contentHeight * actualDpr), 32767);
       canvas.width = cWidth;
       canvas.height = cHeight;
       
