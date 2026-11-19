@@ -58,7 +58,10 @@ async function processCapture(data) {
       const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
       const isWindow = data.isWindow !== false;
       const lastSeg = segments[segments.length - 1];
-      const minCanvasHeight = Math.round((lastSeg.y + data.viewportHeight) * actualDpr);
+      const minCanvasHeight = Math.max(
+        firstImg.height,
+        Math.round((lastSeg.y + data.viewportHeight) * actualDpr)
+      );
       const finalCanvasHeight = Math.min(minCanvasHeight, 32767);
 
       if (isWindow) {

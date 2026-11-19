@@ -429,18 +429,25 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
   }
 
-  // Simple, reliable tab capture
-  function captureTab(format = 'jpeg', quality = 92) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format, quality }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn("Capture error:", chrome.runtime.lastError.message);
-          resolve(null);
-          return;
-        }
-        resolve(response && response.dataUrl ? response.dataUrl : null);
+  // Simple, reliable tab capture with retry backoff
+  async function captureTab(format = 'jpeg', quality = 92, retries = 2) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const res = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB', format, quality }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.warn("Capture error:", chrome.runtime.lastError.message);
+            resolve(null);
+            return;
+          }
+          resolve(response && response.dataUrl ? response.dataUrl : null);
+        });
       });
-    });
+      if (res) return res;
+      if (attempt < retries) {
+        await wait(250);
+      }
+    }
+    return null;
   }
 
   const captureTabSafe = captureTab;
@@ -490,37 +497,55 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
 
   // --- Scroller Abstraction ---
   function createScroller(element) {
-    if (element === window || element === document.scrollingElement || element === document.body || element === document.documentElement) {
+    if (!element || element === window || element === document.scrollingElement || element === document.body || element === document.documentElement) {
       const se = document.scrollingElement || document.documentElement;
       return {
         element: window,
-        getScrollTop: () => window.scrollY || se.scrollTop,
-        getScrollLeft: () => window.scrollX || se.scrollLeft,
-        getScrollHeight: () => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement.scrollHeight, se.scrollHeight),
+        getScrollTop: () => window.scrollY || (se ? se.scrollTop : 0) || (document.body ? document.body.scrollTop : 0),
+        getScrollLeft: () => window.scrollX || (se ? se.scrollLeft : 0) || (document.body ? document.body.scrollLeft : 0),
+        getScrollHeight: () => Math.max(
+          document.body ? document.body.scrollHeight : 0,
+          document.documentElement ? document.documentElement.scrollHeight : 0,
+          se ? se.scrollHeight : 0
+        ),
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
         scrollTo: (x, y) => { 
-          try { window.scrollTo(x, y); } catch (e) {}
-          try { se.scrollTop = y; se.scrollLeft = x; } catch (e) {}
+          try { window.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+            try { window.scrollTo(x, y); } catch (e2) {}
+          }
+          if (se) {
+            try { se.scrollTop = y; se.scrollLeft = x; } catch (e) {}
+          }
+          if (document.documentElement) {
+            try { document.documentElement.scrollTop = y; document.documentElement.scrollLeft = x; } catch (e) {}
+          }
           if (document.body) {
             try { document.body.scrollTop = y; document.body.scrollLeft = x; } catch (e) {}
           }
           try {
             window.dispatchEvent(new Event('scroll'));
             document.dispatchEvent(new Event('scroll'));
-            se.dispatchEvent(new Event('scroll', { bubbles: true }));
+            if (se) se.dispatchEvent(new Event('scroll', { bubbles: true }));
           } catch (e) {}
         },
         scrollBy: (x, y) => { 
-          try { window.scrollBy(x, y); } catch (e) {}
-          try { se.scrollTop += y; se.scrollLeft += x; } catch (e) {}
+          try { window.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+            try { window.scrollBy(x, y); } catch (e2) {}
+          }
+          if (se) {
+            try { se.scrollTop += y; se.scrollLeft += x; } catch (e) {}
+          }
+          if (document.documentElement) {
+            try { document.documentElement.scrollTop += y; document.documentElement.scrollLeft += x; } catch (e) {}
+          }
           if (document.body) {
             try { document.body.scrollTop += y; document.body.scrollLeft += x; } catch (e) {}
           }
           try {
             window.dispatchEvent(new Event('scroll'));
             document.dispatchEvent(new Event('scroll'));
-            se.dispatchEvent(new Event('scroll', { bubbles: true }));
+            if (se) se.dispatchEvent(new Event('scroll', { bubbles: true }));
           } catch (e) {}
         },
         hideScrollbar: () => {
@@ -546,7 +571,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           element.scrollLeft = x; 
           element.scrollTop = y;
           if (typeof element.scrollTo === 'function') {
-            try { element.scrollTo(x, y); } catch (e) {}
+            try { element.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+              try { element.scrollTo(x, y); } catch (e2) {}
+            }
           }
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
@@ -557,7 +584,9 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           element.scrollLeft += x; 
           element.scrollTop += y;
           if (typeof element.scrollBy === 'function') {
-            try { element.scrollBy(x, y); } catch (e) {}
+            try { element.scrollBy({ left: x, top: y, behavior: 'instant' }); } catch (e) {
+              try { element.scrollBy(x, y); } catch (e2) {}
+            }
           }
           try {
             element.dispatchEvent(new Event('scroll', { bubbles: true }));
@@ -610,35 +639,37 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     // on html/body but still scroll the window via JavaScript.
     function isWindowScrollable() {
       const se = document.scrollingElement || document.documentElement;
+      if (!se) return false;
+      if (se.scrollHeight > window.innerHeight + 20) return true;
+      if (document.body && document.body.scrollHeight > window.innerHeight + 20) return true;
+
       const orig = window.scrollY || se.scrollTop;
+      const currentX = window.scrollX || se.scrollLeft;
       const tryMove = (top) => {
-        try { window.scrollTo({ left: window.scrollX, top, behavior: 'instant' }); } catch (e) {
-          try { window.scrollTo(window.scrollX, top); } catch (e2) {}
+        try { window.scrollTo({ left: currentX, top, behavior: 'instant' }); } catch (e) {
+          try { window.scrollTo(currentX, top); } catch (e2) {}
         }
-        // Read from both sources to handle quirks mode
         return Math.abs((window.scrollY || se.scrollTop) - orig) >= 1;
       };
-      // Probe down, and up as well in case we're already at the bottom
       const moved = tryMove(orig + SCROLL_PROBE_PX) || (orig > 0 && tryMove(orig - SCROLL_PROBE_PX));
-      try { window.scrollTo({ left: window.scrollX, top: orig, behavior: 'instant' }); } catch (e) {
-        try { window.scrollTo(window.scrollX, orig); } catch (e2) {}
+      try { window.scrollTo({ left: currentX, top: orig, behavior: 'instant' }); } catch (e) {
+        try { window.scrollTo(currentX, orig); } catch (e2) {}
       }
       return moved;
     }
 
     function scrollRange(el) {
-      if (el === window) {
+      if (!el || el === window) {
         const se = document.scrollingElement || document.documentElement;
         return Math.max(
-          se.scrollHeight - se.clientHeight,
-          (document.body ? document.body.scrollHeight : 0) - window.innerHeight
+          se ? (se.scrollHeight - se.clientHeight) : 0,
+          document.body ? (document.body.scrollHeight - window.innerHeight) : 0
         );
       }
       return el.scrollHeight - el.clientHeight;
     }
 
-    // 1. Check if window itself is scrollable (covers Twitter, Threads, most sites)
-    // Always test window FIRST because most sites scroll the main document.
+    // 1. Check if window itself is scrollable (covers Twitter, Threads, GitHub, most sites)
     const windowCanScroll = isWindowScrollable();
     const windowRange = windowCanScroll ? scrollRange(window) : 0;
 
@@ -654,8 +685,8 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
       }
     }
 
-    // 3. If window scrolls, use it (this handles Twitter, GitHub, most pages)
-    if (windowCanScroll && windowRange > 200) {
+    // 3. If window scrolls, use it (this handles Twitter, GitHub, Threads, most pages)
+    if (windowCanScroll && windowRange > 100) {
       return window;
     }
 
@@ -698,44 +729,67 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
   // Never hide content columns, feeds (like Twitter 600px or Threads 620px), or container elements!
   function hideFixedElements(scrollerElement) {
     const hiddenElements = [];
-    const elements = document.querySelectorAll('*');
-    
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
-      if (el === document.documentElement || el === document.body) continue;
-      if (scrollerElement && (el === scrollerElement || el.contains(scrollerElement) || scrollerElement.contains(el))) continue;
-      
-      const style = window.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-      
-      if (style.position === 'fixed' || style.position === 'sticky') {
-        const rect = el.getBoundingClientRect();
+    try {
+      const isWin = !scrollerElement || scrollerElement === window || scrollerElement === document.documentElement || scrollerElement === document.body;
+      const isNode = !isWin && (scrollerElement instanceof Node);
+
+      const elements = document.querySelectorAll('*');
+      for (let i = 0; i < elements.length; i++) {
+        const el = elements[i];
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) continue;
+        if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'LINK') continue;
+        if (el === document.documentElement || el === document.body) continue;
         
-        // Only target small top headers or bottom banners!
-        const isHeaderOrFooter = (rect.height <= 180) && (rect.top <= 20 || rect.bottom >= window.innerHeight - 20);
-        if (!isHeaderOrFooter) {
+        // Never hide extension UI elements
+        if (el.id === 'ls-status-badge' || el.id === 'ls-capture-overlay' || el.id === 'ls-overlay-host' || el.id === 'ls-highlight-overlay') {
           continue;
         }
 
-        hiddenElements.push({
-          el: el,
-          originalOpacity: el.style.opacity,
-          originalTransition: el.style.transition
-        });
-        el.style.transition = 'none';
-        el.style.opacity = '0';
+        if (isNode) {
+          try {
+            if (el === scrollerElement || el.contains(scrollerElement) || scrollerElement.contains(el)) {
+              continue;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+        if (style.position === 'fixed' || style.position === 'sticky') {
+          const rect = el.getBoundingClientRect();
+
+          // Only target small top headers or bottom banners!
+          const isHeaderOrFooter = (rect.height <= 180) && (rect.top <= 25 || rect.bottom >= (window.innerHeight - 25));
+          if (!isHeaderOrFooter) {
+            continue;
+          }
+
+          hiddenElements.push({
+            el: el,
+            originalOpacity: el.style.opacity,
+            originalTransition: el.style.transition
+          });
+          el.style.transition = 'none';
+          el.style.opacity = '0';
+        }
       }
+    } catch (err) {
+      console.warn("hideFixedElements warning:", err);
     }
 
     return function restoreFixedElements() {
       hiddenElements.forEach(item => {
-        if (item.el) {
-          item.el.style.opacity = item.originalOpacity;
-          setTimeout(() => {
-            if (item.el) item.el.style.transition = item.originalTransition;
-          }, 50);
-        }
+        try {
+          if (item.el) {
+            item.el.style.opacity = item.originalOpacity;
+            setTimeout(() => {
+              try { if (item.el) item.el.style.transition = item.originalTransition; } catch (e) {}
+            }, 50);
+          }
+        } catch (e) {}
       });
     };
   }
@@ -1002,8 +1056,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
 
         if (segments.length >= 1 && restoreCallbacks.length === 0) {
-          const restore = hideFixedElements(scroller.element);
-          if (restore) restoreCallbacks.push(restore);
+          try {
+            const restore = hideFixedElements(scroller.element);
+            if (restore) restoreCallbacks.push(restore);
+          } catch (e) {
+            console.warn("hideFixedElements error:", e);
+          }
           await wait(50);
         }
         
@@ -1048,14 +1106,16 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           }
         }
       }
+    } catch (areaErr) {
+      console.error("Area capture loop error:", areaErr);
     } finally {
       isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
       }
-      restoreScrollbar();
-      scroller.scrollTo(originalScrollLeft, originalScrollTop);
+      try { restoreScrollbar(); } catch (e) {}
+      try { scroller.scrollTo(originalScrollLeft, originalScrollTop); } catch (e) {}
     }
     
     if (segments.length === 0) {
@@ -1152,14 +1212,16 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           }
         }
       }
+    } catch (boxErr) {
+      console.error("Scroll box capture loop error:", boxErr);
     } finally {
       isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
       }
-      restoreScrollbar();
-      scroller.scrollTo(originalScrollLeft, originalScrollTop);
+      try { restoreScrollbar(); } catch (e) {}
+      try { scroller.scrollTo(originalScrollLeft, originalScrollTop); } catch (e) {}
     }
     
     if (segments.length === 0) {
@@ -1212,7 +1274,7 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
 
     showStatusBadge("Preparing full page capture...");
-    scroller.scrollTo(isWindowScroller ? 0 : scroller.getScrollLeft(), 0);
+    scroller.scrollTo(isWindowScroller ? (window.scrollX || 0) : scroller.getScrollLeft(), 0);
     await wait(400); 
     
     const segments = [];
@@ -1227,8 +1289,12 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         }
 
         if (segments.length >= 1 && restoreCallbacks.length === 0) {
-          const restore = hideFixedElements(scroller.element);
-          if (restore) restoreCallbacks.push(restore);
+          try {
+            const restore = hideFixedElements(scroller.element);
+            if (restore) restoreCallbacks.push(restore);
+          } catch (e) {
+            console.warn("hideFixedElements error:", e);
+          }
           await wait(50);
         }
         
@@ -1273,14 +1339,16 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
           }
         }
       }
+    } catch (fullErr) {
+      console.error("Full page capture error:", fullErr);
     } finally {
       isScrollingCapture = false;
       while (restoreCallbacks.length > 0) {
         const restore = restoreCallbacks.pop();
         try { restore(); } catch (e) { console.error(e); }
       }
-      restoreScrollbar();
-      scroller.scrollTo(originalScrollLeft, originalScrollTop);
+      try { restoreScrollbar(); } catch (e) {}
+      try { scroller.scrollTo(originalScrollLeft, originalScrollTop); } catch (e) {}
     }
     
     if (segments.length === 0) {
