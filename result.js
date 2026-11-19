@@ -1,26 +1,36 @@
 document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get('captureData', (data) => {
     if (data.captureData) {
-      try {
-        sessionStorage.setItem('lsLastCaptureData', JSON.stringify(data.captureData));
-      } catch (e) {
-        console.warn("Could not cache to sessionStorage:", e);
-      }
       processCapture(data.captureData);
+      // Optional: Clear storage to free memory
+      chrome.storage.local.remove('captureData');
     } else {
-      const cached = sessionStorage.getItem('lsLastCaptureData');
-      if (cached) {
-        try {
-          processCapture(JSON.parse(cached));
-          return;
-        } catch (e) {
-          console.error("Failed to parse cached capture data:", e);
-        }
-      }
       document.getElementById('loading').textContent = 'No capture data found.';
     }
   });
 });
+
+function getSafeDimensions(rawWidth, rawHeight) {
+  const MAX_DIM = 32767;
+  const MAX_AREA = 268435456; // 16384 * 16384 (approx 268 Megapixels)
+  let scale = 1.0;
+  
+  if (rawWidth > MAX_DIM) {
+    scale = Math.min(scale, MAX_DIM / rawWidth);
+  }
+  if (rawHeight > MAX_DIM) {
+    scale = Math.min(scale, MAX_DIM / rawHeight);
+  }
+  if ((rawWidth * scale) * (rawHeight * scale) > MAX_AREA) {
+    scale = Math.min(scale, Math.sqrt(MAX_AREA / (rawWidth * rawHeight)));
+  }
+  
+  return {
+    width: Math.max(1, Math.floor(rawWidth * scale)),
+    height: Math.max(1, Math.floor(rawHeight * scale)),
+    scale: scale
+  };
+}
 
 async function processCapture(data) {
   const canvas = document.getElementById('result-canvas');
@@ -28,131 +38,160 @@ async function processCapture(data) {
   const loading = document.getElementById('loading');
   const dpr = data.dpr || 1;
 
-  try {
-    if (data.type === 'visible') {
-      const img = await loadImage(data.image);
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-    } 
-    else if (data.type === 'area') {
-      const img = await loadImage(data.image);
-      const rect = data.rect;
-      
-      const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
-      
-      const sx = Math.max(0, Math.min(img.width - 1, Math.round(rect.x * actualDpr)));
-      const sy = Math.max(0, Math.min(img.height - 1, Math.round(rect.y * actualDpr)));
-      const sWidth = Math.max(1, Math.min(Math.round(rect.width * actualDpr), img.width - sx));
-      const sHeight = Math.max(1, Math.min(Math.round(rect.height * actualDpr), img.height - sy));
-
-      canvas.width = sWidth;
-      canvas.height = sHeight;
-      ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+  if (data.type === 'visible') {
+    const img = await loadImage(data.image);
+    const safeDim = getSafeDimensions(img.width, img.height);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
     }
-    else if (data.type === 'full') {
-      const segments = data.segments;
-      if (segments.length === 0) return;
+    ctx.drawImage(img, 0, 0);
+  } 
+  else if (data.type === 'area') {
+    const img = await loadImage(data.image);
+    const rect = data.rect;
+    
+    const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
+    
+    const sx = Math.round(rect.x * actualDpr);
+    const sy = Math.round(rect.y * actualDpr);
+    const sWidth = Math.round(rect.width * actualDpr);
+    const sHeight = Math.round(rect.height * actualDpr);
+
+    const safeDim = getSafeDimensions(sWidth, sHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
+    ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+  }
+  else if (data.type === 'full') {
+    const segments = data.segments;
+    if (segments.length === 0) return;
+    
+    const firstImg = await loadImage(segments[0].dataUrl);
+    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+    
+    // Check if capture is of an inner scroller or the full window
+    const isInnerScroller = (data.boundsLeft > 0 || data.boundsTop > 0 || (data.viewportWidth && data.viewportWidth < data.windowWidth - 20));
+    
+    const cropX = isInnerScroller ? Math.round(data.boundsLeft * actualDpr) : 0;
+    const cropY = isInnerScroller ? Math.round(data.boundsTop * actualDpr) : 0;
+    const cropWidth = isInnerScroller ? Math.round(data.viewportWidth * actualDpr) : firstImg.width;
+    const cropHeight = isInnerScroller ? Math.round(data.viewportHeight * actualDpr) : firstImg.height;
+    
+    const rawWidth = cropWidth;
+    const rawHeight = Math.round(data.totalHeight * actualDpr);
+    
+    const safeDim = getSafeDimensions(rawWidth, rawHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
+
+    let lastEnd = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const img = await loadImage(seg.dataUrl);
       
-      const firstImg = await loadImage(segments[0].dataUrl);
-      const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
-      const isWindow = data.isWindow !== false;
-      const lastSeg = segments[segments.length - 1];
-      const minCanvasHeight = Math.max(
-        firstImg.height,
-        Math.round((lastSeg.y + data.viewportHeight) * actualDpr)
-      );
-      const finalCanvasHeight = Math.min(minCanvasHeight, 32767);
-
-      if (isWindow) {
-        canvas.width = Math.min(firstImg.width, 16384);
-        canvas.height = finalCanvasHeight;
-
-        for (let i = 0; i < segments.length; i++) {
-          const seg = segments[i];
-          const img = await loadImage(seg.dataUrl);
-          const dy = Math.round(seg.y * actualDpr);
-          const dHeight = Math.min(img.height, Math.max(0, canvas.height - dy));
-          
-          if (dHeight > 0) {
-            ctx.drawImage(img, 0, 0, img.width, dHeight, 0, dy, img.width, dHeight);
-          }
-        }
+      const segY = seg.y;
+      const segHeight = data.viewportHeight || Math.round(firstImg.height / actualDpr);
+      
+      if (i === 0) {
+        ctx.drawImage(img, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+        lastEnd = segY + segHeight;
       } else {
-        // Internal container: crop each slice to container bounds
-        const cWidth = Math.round(data.viewportWidth * actualDpr);
-        canvas.width = Math.min(cWidth, 16384);
-        canvas.height = finalCanvasHeight;
-
-        const sx = Math.max(0, Math.min(firstImg.width - 1, Math.round(data.boundsLeft * actualDpr)));
-        const sy = Math.max(0, Math.min(firstImg.height - 1, Math.round(data.boundsTop * actualDpr)));
-        const sWidth = Math.max(1, Math.min(cWidth, firstImg.width - sx));
-        const sHeight = Math.max(1, Math.min(Math.round(data.viewportHeight * actualDpr), firstImg.height - sy));
-
-        for (let i = 0; i < segments.length; i++) {
-          const seg = segments[i];
-          const img = await loadImage(seg.dataUrl);
-          const dy = Math.round(seg.y * actualDpr);
-          const dHeight = Math.min(sHeight, Math.max(0, canvas.height - dy));
+        // Only draw newly revealed portion to avoid overlapping / duplicate slices
+        const newContentStart = Math.max(segY, lastEnd);
+        const newContentEnd = segY + segHeight;
+        
+        if (newContentEnd > newContentStart) {
+          const sliceOffsetY = newContentStart - segY;
+          const sliceHeight = newContentEnd - newContentStart;
           
-          if (dHeight > 0) {
-            ctx.drawImage(img, sx, sy, sWidth, dHeight, 0, dy, sWidth, dHeight);
-          }
-        }
-      }
-    }
-    else if (data.type === 'area_stitched') {
-      const segments = data.segments;
-      if (segments.length === 0) return;
-      
-      const firstImg = await loadImage(segments[0].dataUrl);
-      const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
-      
-      const cWidth = Math.min(Math.round(data.contentWidth * actualDpr), 16384);
-      const cHeight = Math.min(Math.round(data.contentHeight * actualDpr), 32767);
-      canvas.width = cWidth;
-      canvas.height = cHeight;
-      
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        const img = await loadImage(seg.dataUrl);
-        
-        const viewportTop = seg.y;
-        const viewportBottom = seg.y + data.viewportHeight;
-        
-        const contentTop = data.contentTop;
-        const contentBottom = data.contentTop + data.contentHeight;
-        
-        const intersectTop = Math.max(contentTop, viewportTop);
-        const intersectBottom = Math.min(contentBottom, viewportBottom);
-        
-        if (intersectBottom > intersectTop) {
-          const screenX = data.boundsLeft + data.contentLeft - seg.x;
-          const screenY = data.boundsTop + (intersectTop - seg.y);
-          
-          const sx = Math.max(0, Math.min(img.width - 1, Math.round(screenX * actualDpr)));
-          const sy = Math.max(0, Math.min(img.height - 1, Math.round(screenY * actualDpr)));
-          const sWidth = Math.max(1, Math.min(Math.round(data.contentWidth * actualDpr), img.width - sx));
-          const sHeight = Math.max(1, Math.min(Math.round((intersectBottom - intersectTop) * actualDpr), img.height - sy));
+          const sx = cropX;
+          const sy = cropY + Math.round(sliceOffsetY * actualDpr);
+          const sw = cropWidth;
+          const sh = Math.round(sliceHeight * actualDpr);
           
           const dx = 0;
-          const dy = Math.round((intersectTop - contentTop) * actualDpr);
+          const dy = Math.round(newContentStart * actualDpr);
           
-          ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+          ctx.drawImage(img, sx, sy, sw, sh, dx, dy, sw, sh);
+          lastEnd = newContentEnd;
         }
       }
     }
-
-    loading.style.display = 'none';
-    window.dispatchEvent(new CustomEvent('screenshot-ready'));
-  } catch (err) {
-    console.error("Error processing capture:", err);
-    loading.textContent = 'Failed to process screenshot: ' + (err.message || err);
   }
+  else if (data.type === 'area_stitched') {
+    const segments = data.segments;
+    if (segments.length === 0) return;
+    
+    const firstImg = await loadImage(segments[0].dataUrl);
+    const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
+    
+    const rawWidth = Math.round(data.contentWidth * actualDpr);
+    const rawHeight = Math.round(data.contentHeight * actualDpr);
+    
+    const safeDim = getSafeDimensions(rawWidth, rawHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
+    
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const img = await loadImage(seg.dataUrl);
+      
+      // Viewport bounds in content space (Vertical only)
+      const viewportTop = seg.y;
+      const viewportBottom = seg.y + data.viewportHeight;
+      
+      // Selection bounds in content space
+      const contentTop = data.contentTop;
+      const contentBottom = data.contentTop + data.contentHeight;
+      
+      // Intersection in content space (Vertical only)
+      const intersectTop = Math.max(contentTop, viewportTop);
+      const intersectBottom = Math.min(contentBottom, viewportBottom);
+      
+      if (intersectBottom > intersectTop) {
+        // Screen X of the selection's left edge
+        // boundsLeft is the scroller's on-screen X.
+        // contentLeft is the selection's X relative to the scroller's content.
+        // seg.x is the scroller's scrollLeft.
+        const screenX = data.boundsLeft + data.contentLeft - seg.x;
+        
+        // Screen Y of the current intersecting slice
+        const screenY = data.boundsTop + (intersectTop - seg.y);
+        
+        // Image coordinates to crop from
+        const sx = Math.max(0, Math.round(screenX * actualDpr));
+        const sy = Math.max(0, Math.round(screenY * actualDpr));
+        const sWidth = Math.round(data.contentWidth * actualDpr);
+        const sHeight = Math.round((intersectBottom - intersectTop) * actualDpr);
+        
+        // Canvas coordinates to draw to
+        const dx = 0; // Always draw full width of selection
+        const dy = Math.round((intersectTop - contentTop) * actualDpr);
+        
+        ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
+      }
+    }
+  }
+
+  loading.style.display = 'none';
+  window.dispatchEvent(new CustomEvent('screenshot-ready'));
 
   function getCombinedCanvas() {
     const annotationCanvas = document.getElementById('annotation-canvas');
-    if (!annotationCanvas || annotationCanvas.width === 0) return canvas;
+    if (!annotationCanvas || annotationCanvas.width === 0) return canvas; // Fallback if no annotations
     const combined = document.createElement('canvas');
     combined.width = canvas.width;
     combined.height = canvas.height;
@@ -162,7 +201,7 @@ async function processCapture(data) {
     return combined;
   }
 
-  // Setup download and clipboard handlers
+  // Setup download handlers
   document.getElementById('copy-image').addEventListener('click', async () => {
     const copyBtn = document.getElementById('copy-image');
     const originalText = copyBtn.textContent;
@@ -219,9 +258,10 @@ function exportCanvas(canvas, mimeType, quality, callback, scale = 1.0) {
     if (blob) {
       callback(blob);
     } else {
-      const nextScale = scale * 0.75;
+      // If failed, try scaling down further
+      const nextScale = scale * 0.75; // Reduce by 25%
       if (nextScale < 0.2) {
-        callback(null);
+        callback(null); // Too small, give up
       } else {
         console.warn(`Export failed at scale ${scale}, retrying at ${nextScale}`);
         exportCanvas(canvas, mimeType, quality, callback, nextScale);
@@ -257,7 +297,7 @@ function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = (err) => reject(new Error("Failed to load image source: " + err));
+    img.onerror = reject;
     img.src = src;
   });
 }
