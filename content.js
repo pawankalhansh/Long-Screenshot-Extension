@@ -375,6 +375,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     }
   }
 
+  // Display scaling like 125%/150% gives fractional devicePixelRatio, so scroll
+  // offsets are fractional and snap to device pixels. Compare with a tolerance.
+  const SCROLL_PROBE_PX = 10;
+  function hasScrolledFrom(scroller, previousY) {
+    return Math.abs(scroller.getScrollTop() - previousY) >= 1;
+  }
+
   async function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -584,15 +591,17 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         return false;
       }
       if (el.scrollHeight <= el.clientHeight + 20) return false;
-      
+
+      // Use a multi-pixel probe: at fractional display scaling (125%/150%) a
+      // 1px scroll can snap back to the same position and look "not scrollable".
       const orig = el.scrollTop;
-      el.scrollTop = orig + 1;
-      if (el.scrollTop !== orig) {
+      el.scrollTop = orig + SCROLL_PROBE_PX;
+      if (Math.abs(el.scrollTop - orig) >= 1) {
         el.scrollTop = orig;
         return true;
       }
-      el.scrollTop = orig - 1;
-      const moved = el.scrollTop !== orig;
+      el.scrollTop = orig - SCROLL_PROBE_PX;
+      const moved = Math.abs(el.scrollTop - orig) >= 1;
       el.scrollTop = orig;
       return moved;
     }
@@ -602,18 +611,19 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
     function isWindowScrollable() {
       const se = document.scrollingElement || document.documentElement;
       const orig = window.scrollY || se.scrollTop;
-      try { window.scrollTo({ left: 0, top: orig + 2, behavior: 'instant' }); } catch (e) {
-        try { window.scrollTo(0, orig + 2); } catch (e2) {}
-      }
-      // Read from both sources to handle quirks mode
-      const newPos = window.scrollY || se.scrollTop;
-      if (newPos !== orig) {
-        try { window.scrollTo({ left: 0, top: orig, behavior: 'instant' }); } catch (e) {
-          try { window.scrollTo(0, orig); } catch (e2) {}
+      const tryMove = (top) => {
+        try { window.scrollTo({ left: window.scrollX, top, behavior: 'instant' }); } catch (e) {
+          try { window.scrollTo(window.scrollX, top); } catch (e2) {}
         }
-        return true;
+        // Read from both sources to handle quirks mode
+        return Math.abs((window.scrollY || se.scrollTop) - orig) >= 1;
+      };
+      // Probe down, and up as well in case we're already at the bottom
+      const moved = tryMove(orig + SCROLL_PROBE_PX) || (orig > 0 && tryMove(orig - SCROLL_PROBE_PX));
+      try { window.scrollTo({ left: window.scrollX, top: orig, behavior: 'instant' }); } catch (e) {
+        try { window.scrollTo(window.scrollX, orig); } catch (e2) {}
       }
-      return false;
+      return moved;
     }
 
     function scrollRange(el) {
@@ -1029,11 +1039,11 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
         await wait(650);
         
-        if (scroller.getScrollTop() === previousScrollY) {
+        if (!hasScrolledFrom(scroller, previousScrollY)) {
           await wait(750);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
           await wait(500);
-          if (scroller.getScrollTop() === previousScrollY) {
+          if (!hasScrolledFrom(scroller, previousScrollY)) {
             break; 
           }
         }
@@ -1133,11 +1143,11 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
         await wait(650);
         
-        if (scroller.getScrollTop() === previousScrollY) {
+        if (!hasScrolledFrom(scroller, previousScrollY)) {
           await wait(750);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
           await wait(500);
-          if (scroller.getScrollTop() === previousScrollY) {
+          if (!hasScrolledFrom(scroller, previousScrollY)) {
             break;
           }
         }
@@ -1252,13 +1262,13 @@ if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 
         // Wait for dynamic render & Twitter/Threads virtualizer & respect rate limit
         await wait(650); 
         
-        if (scroller.getScrollTop() === previousScrollY) {
+        if (!hasScrolledFrom(scroller, previousScrollY)) {
           // Retry for virtualized feeds
           await wait(850);
           scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
           await wait(600);
           
-          if (scroller.getScrollTop() === previousScrollY) {
+          if (!hasScrolledFrom(scroller, previousScrollY)) {
             break;
           }
         }
