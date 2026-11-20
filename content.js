@@ -157,6 +157,12 @@ if (!window.lsCaptureLoaded) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  // Multi-pixel probe tolerance to handle fractional display scaling (125%/150% DPI)
+  const SCROLL_PROBE_PX = 10;
+  function hasScrolledFrom(scroller, previousY) {
+    return Math.abs(scroller.getScrollTop() - previousY) >= 1;
+  }
+
   // --- Injected Stylesheet for Sticky/Fixed Element Suppression ---
   function ensureHiddenStyle() {
     if (document.getElementById('ls-hidden-style')) return;
@@ -425,14 +431,14 @@ if (!window.lsCaptureLoaded) {
       if (el === window) {
         const se = document.scrollingElement || document.documentElement;
         const orig = se.scrollTop;
-        se.scrollTop = orig + 1;
-        const moved = se.scrollTop !== orig;
+        se.scrollTop = orig + SCROLL_PROBE_PX;
+        const moved = Math.abs(se.scrollTop - orig) >= 1;
         se.scrollTop = orig;
         return moved;
       } else {
         const orig = el.scrollTop;
-        el.scrollTop = orig + 1;
-        const moved = el.scrollTop !== orig;
+        el.scrollTop = orig + SCROLL_PROBE_PX;
+        const moved = Math.abs(el.scrollTop - orig) >= 1;
         el.scrollTop = orig;
         return moved;
       }
@@ -768,8 +774,12 @@ if (!window.lsCaptureLoaded) {
         const previousScrollY = scroller.getScrollTop();
         await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
         
-        if (scroller.getScrollTop() === previousScrollY) {
-          break; 
+        if (!hasScrolledFrom(scroller, previousScrollY)) {
+          await wait(500);
+          await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
+          if (!hasScrolledFrom(scroller, previousScrollY)) {
+            break; 
+          }
         }
       }
       
@@ -835,8 +845,12 @@ if (!window.lsCaptureLoaded) {
         const previousScrollY = scroller.getScrollTop();
         await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
         
-        if (scroller.getScrollTop() === previousScrollY) {
-          break;
+        if (!hasScrolledFrom(scroller, previousScrollY)) {
+          await wait(500);
+          await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
+          if (!hasScrolledFrom(scroller, previousScrollY)) {
+            break;
+          }
         }
       }
       
