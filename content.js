@@ -5,7 +5,7 @@ if (!window.lsCaptureLoaded) {
   let shadowRoot = null;
   let isCapturingArea = false;
 
-  // Inject CSS into the page to handle the selection overlay (needs to be in main DOM to cover everything)
+  // Inject CSS into the page to handle the selection overlay
   const style = document.createElement('style');
   style.textContent = `
     .ls-capture-overlay {
@@ -39,6 +39,7 @@ if (!window.lsCaptureLoaded) {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'TOGGLE_OVERLAY') {
       toggleToolbar();
+      sendResponse({ ok: true });
     }
   });
 
@@ -50,7 +51,6 @@ if (!window.lsCaptureLoaded) {
     }
 
     overlayHost = document.createElement('div');
-    // High z-index to stay on top
     overlayHost.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 2147483647; font-family: system-ui, sans-serif;';
     
     shadowRoot = overlayHost.attachShadow({ mode: 'open' });
@@ -106,10 +106,9 @@ if (!window.lsCaptureLoaded) {
     const toolbar = document.createElement('div');
     toolbar.className = 'toolbar';
     
-    // Icons (Simple SVGs)
     const iconArea = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 4h-4v2h6v-6h-2v4z"/></svg>`;
     const iconVisible = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/></svg>`;
-    const iconFull = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 13l5 5 5-5M12 18V6"/></svg>`; // Down arrow to indicate scrolling
+    const iconFull = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 13l5 5 5-5M12 18V6"/></svg>`;
     const iconClose = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
 
     toolbar.innerHTML = `
@@ -126,8 +125,8 @@ if (!window.lsCaptureLoaded) {
 
     // Event Listeners
     shadowRoot.getElementById('btn-area').addEventListener('click', () => {
-      stopAreaCapture(); // Reset state just in case
-      startAreaCapture(); // Start normally (hides toolbar)
+      stopAreaCapture();
+      startAreaCapture();
     });
     shadowRoot.getElementById('btn-visible').addEventListener('click', () => {
       stopAreaCapture();
@@ -158,28 +157,201 @@ if (!window.lsCaptureLoaded) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function startVisibleCapture() {
-    removeToolbar();
-    await wait(150); // wait for UI to disappear
+  // --- Injected Stylesheet for Sticky/Fixed Element Suppression ---
+  function ensureHiddenStyle() {
+    if (document.getElementById('ls-hidden-style')) return;
+    const styleEl = document.createElement('style');
+    styleEl.id = 'ls-hidden-style';
+    styleEl.textContent = `
+      [data-ls-hidden="true"] {
+        visibility: hidden !important;
+        opacity: 0 !important;
+        transition: none !important;
+        animation: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(styleEl);
+  }
+
+  function hideFixedElements() {
+    ensureHiddenStyle();
+    const hiddenElements = [];
+    const nodeIterator = document.createNodeIterator(document.documentElement, NodeFilter.SHOW_ELEMENT, null, false);
+    let el;
+    while ((el = nodeIterator.nextNode())) {
+      if (el === captureOverlay || el === overlayHost || (overlayHost && overlayHost.contains(el))) continue;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+      
+      if (style.position === 'fixed' || style.position === 'sticky') {
+        hiddenElements.push(el);
+        el.setAttribute('data-ls-hidden', 'true');
+      }
+    }
+    return function restoreFixedElements() {
+      hiddenElements.forEach(el => {
+        try { el.removeAttribute('data-ls-hidden'); } catch (e) {}
+      });
+    };
+  }
+
+  // --- Streaming Pipeline via Long-Lived Port ---
+  function createCaptureSession(type, metadata = {}) {
+    const sessionId = 'ls_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const port = chrome.runtime.connect({ name: 'LONG_SCREENSHOT_PORT' });
     
-    chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
-      if (response && response.dataUrl) {
-        chrome.runtime.sendMessage({
-          action: 'OPEN_RESULT',
-          payload: {
-            type: 'visible',
-            image: response.dataUrl,
-            dpr: window.devicePixelRatio,
-            windowWidth: window.innerWidth
-          }
-        });
+    let isPortOpen = true;
+    port.onDisconnect.addListener(() => { isPortOpen = false; });
+    port.onMessage.addListener((msg) => {
+      if (msg.action === 'PING') {
+        try { port.postMessage({ action: 'PONG' }); } catch (e) {}
       }
     });
+
+    port.postMessage({
+      action: 'START_SESSION',
+      sessionData: {
+        sessionId,
+        type,
+        createdAt: Date.now(),
+        dpr: window.devicePixelRatio,
+        windowWidth: window.innerWidth,
+        ...metadata
+      }
+    });
+
+    const MIN_GAP = 550; // Throttling within Chrome's capture limit (~2 calls/sec)
+    let lastTime = 0;
+
+    return {
+      sessionId,
+      captureFrame: async (index, y, x = 0) => {
+        if (!isPortOpen) throw new Error("Connection to extension service worker lost.");
+        
+        const gap = Date.now() - lastTime;
+        if (gap < MIN_GAP) {
+          await wait(MIN_GAP - gap);
+        }
+        lastTime = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            port.onMessage.removeListener(handler);
+            reject(new Error("Capture frame timeout (12s)"));
+          }, 12000);
+
+          const handler = (msg) => {
+            if (msg.action === 'FRAME_SAVED' && msg.index === index) {
+              clearTimeout(timeout);
+              port.onMessage.removeListener(handler);
+              resolve(msg);
+            } else if (msg.action === 'CAPTURE_ERROR' && msg.index === index) {
+              clearTimeout(timeout);
+              port.onMessage.removeListener(handler);
+              reject(new Error(msg.error || 'Capture error'));
+            }
+          };
+          port.onMessage.addListener(handler);
+          port.postMessage({ action: 'CAPTURE_FRAME', sessionId, index, y, x });
+        });
+      },
+      finish: async (sessionUpdates = {}) => {
+        if (!isPortOpen) return;
+        return new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            try { port.disconnect(); } catch (e) {}
+            resolve();
+          }, 5000);
+
+          const handler = (msg) => {
+            if (msg.action === 'SESSION_FINISHED' && msg.sessionId === sessionId) {
+              clearTimeout(timeout);
+              port.onMessage.removeListener(handler);
+              try { port.disconnect(); } catch (e) {}
+              resolve(msg);
+            }
+          };
+          port.onMessage.addListener(handler);
+          port.postMessage({ action: 'FINISH_SESSION', sessionId, sessionUpdates });
+        });
+      },
+      abort: () => {
+        try { port.disconnect(); } catch (e) {}
+      }
+    };
+  }
+
+  // --- Scroll & Settle Helper ---
+  async function scrollAndSettle(scroller, x, y) {
+    scroller.scrollTo(x, y);
+    
+    const startTime = Date.now();
+    let lastPos = scroller.getScrollTop();
+    await wait(100);
+    
+    while (Date.now() - startTime < 800) {
+      const currentPos = scroller.getScrollTop();
+      if (currentPos === lastPos) {
+        return; // Scroll settled
+      }
+      lastPos = currentPos;
+      await wait(80);
+    }
+  }
+
+  async function startVisibleCapture() {
+    removeToolbar();
+    await wait(150);
+    
+    try {
+      const session = createCaptureSession('visible', {});
+      await session.captureFrame(0, 0);
+      await session.finish();
+    } catch (err) {
+      console.error("Visible capture failed:", err);
+      alert("Capture failed: " + err.message);
+    }
   }
 
   // --- Scroller Abstraction ---
-  // Uses direct property assignment (scrollTop/scrollLeft) instead of
-  // scrollTo()/scrollBy() API to bypass CSS scroll-behavior: smooth.
+  function forceInstantScroll(el) {
+    const targets = [document.documentElement, document.body];
+    if (el && el !== document.documentElement && el !== document.body) {
+      targets.push(el);
+    }
+    const originals = targets.map(t => ({ el: t, val: t.style.scrollBehavior }));
+    targets.forEach(t => { t.style.scrollBehavior = 'auto'; });
+    return () => originals.forEach(o => { o.el.style.scrollBehavior = o.val; });
+  }
+
+  function getScrollerContentRect(el) {
+    if (!el || el === window || el === document.scrollingElement || el === document.documentElement || el === document.body) {
+      return {
+        left: 0,
+        top: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        right: window.innerWidth,
+        bottom: window.innerHeight
+      };
+    }
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+    const borderTop = parseFloat(style.borderTopWidth) || 0;
+    
+    return {
+      left: rect.left + borderLeft,
+      top: rect.top + borderTop,
+      width: el.clientWidth,
+      height: el.clientHeight,
+      right: rect.left + borderLeft + el.clientWidth,
+      bottom: rect.top + borderTop + el.clientHeight
+    };
+  }
+
   function createScroller(element) {
     if (element === window || element === document.scrollingElement || element === document.body || element === document.documentElement) {
       const se = document.scrollingElement || document.documentElement;
@@ -190,8 +362,17 @@ if (!window.lsCaptureLoaded) {
         getScrollHeight: () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
         getViewportHeight: () => window.innerHeight,
         getViewportWidth: () => window.innerWidth,
-        scrollTo: (x, y) => { se.scrollLeft = x; se.scrollTop = y; },
-        scrollBy: (x, y) => { se.scrollLeft += x; se.scrollTop += y; },
+        getContentRect: () => getScrollerContentRect(window),
+        scrollTo: (x, y) => {
+          const restore = forceInstantScroll(se);
+          se.scrollLeft = x; se.scrollTop = y;
+          restore();
+        },
+        scrollBy: (x, y) => {
+          const restore = forceInstantScroll(se);
+          se.scrollLeft += x; se.scrollTop += y;
+          restore();
+        },
         hideScrollbar: () => {
           const styleEl = document.createElement('style');
           styleEl.textContent = `
@@ -210,8 +391,17 @@ if (!window.lsCaptureLoaded) {
         getScrollHeight: () => element.scrollHeight,
         getViewportHeight: () => element.clientHeight,
         getViewportWidth: () => element.clientWidth,
-        scrollTo: (x, y) => { element.scrollLeft = x; element.scrollTop = y; },
-        scrollBy: (x, y) => { element.scrollLeft += x; element.scrollTop += y; },
+        getContentRect: () => getScrollerContentRect(element),
+        scrollTo: (x, y) => {
+          const restore = forceInstantScroll(element);
+          element.scrollLeft = x; element.scrollTop = y;
+          restore();
+        },
+        scrollBy: (x, y) => {
+          const restore = forceInstantScroll(element);
+          element.scrollLeft += x; element.scrollTop += y;
+          restore();
+        },
         hideScrollbar: () => {
           const origScrollbarWidth = element.style.scrollbarWidth;
           element.style.scrollbarWidth = 'none';
@@ -231,7 +421,6 @@ if (!window.lsCaptureLoaded) {
   }
 
   function findMainScroller() {
-    // Test scrollability using direct property assignment (synchronous, ignores CSS smooth scroll)
     function isScrollable(el) {
       if (el === window) {
         const se = document.scrollingElement || document.documentElement;
@@ -257,9 +446,6 @@ if (!window.lsCaptureLoaded) {
       return el.scrollHeight - el.clientHeight;
     }
 
-    // Check ALL scrollable elements, including window, and pick the one
-    // with the most scrollable content. This avoids prematurely picking
-    // window on SPAs that use a custom scroll container.
     const elements = document.querySelectorAll('*');
     let bestScroller = window;
     let bestRange = isScrollable(window) ? scrollRange(window) : 0;
@@ -278,40 +464,6 @@ if (!window.lsCaptureLoaded) {
     }
     
     return bestScroller;
-  }
-
-  function hideFixedElements() {
-    const hiddenElements = [];
-    const nodeIterator = document.createNodeIterator(document.documentElement, NodeFilter.SHOW_ELEMENT, null, false);
-    let el;
-    while ((el = nodeIterator.nextNode())) {
-      const style = window.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-      
-      let shouldHide = false;
-      
-      if (style.position === 'fixed' || style.position === 'sticky') {
-        shouldHide = true;
-      }
-      
-      if (shouldHide) {
-        hiddenElements.push({
-          el: el,
-          originalOpacity: el.style.opacity,
-          originalTransition: el.style.transition
-        });
-        el.style.transition = 'none';
-        el.style.opacity = '0';
-      }
-    }
-    return function restoreFixedElements() {
-      hiddenElements.forEach(item => {
-        item.el.style.opacity = item.originalOpacity;
-        setTimeout(() => {
-          if (item.el) item.el.style.transition = item.originalTransition;
-        }, 50);
-      });
-    };
   }
 
   function findScrollerForPoint(x, y) {
@@ -336,7 +488,6 @@ if (!window.lsCaptureLoaded) {
   let autoScrollActive = false;
   let activeScroller = null;
   
-  // Track start position in content space
   let contentStartX = 0;
   let contentStartY = 0;
 
@@ -347,7 +498,7 @@ if (!window.lsCaptureLoaded) {
     captureOverlay.style.width = Math.max(document.documentElement.scrollWidth, window.innerWidth) + 'px';
     captureOverlay.style.height = Math.max(document.documentElement.scrollHeight, window.innerHeight) + 'px';
     captureOverlay.style.display = 'block';
-    captureRect.style.display = 'none'; // hide until drag
+    captureRect.style.display = 'none';
     isCapturingArea = true;
     
     document.addEventListener('mousedown', onMouseDown, true);
@@ -366,12 +517,10 @@ if (!window.lsCaptureLoaded) {
   function onMouseDown(e) {
     if (!isCapturingArea) return;
     
-    // Ignore clicks inside the toolbar
     if (overlayHost && (e.composedPath().includes(overlayHost) || overlayHost.contains(e.target))) {
       return;
     }
     
-    // Now hide the toolbar since we're actually starting a selection
     removeToolbar();
     
     e.preventDefault();
@@ -384,10 +533,9 @@ if (!window.lsCaptureLoaded) {
     lastClientX = e.clientX;
     lastClientY = e.clientY;
     
-    // In scroller's content space:
     let boundsLeft = 0, boundsTop = 0;
     if (activeScroller.element !== window) {
-      const bounds = activeScroller.element.getBoundingClientRect();
+      const bounds = activeScroller.getContentRect();
       boundsLeft = bounds.left;
       boundsTop = bounds.top;
     }
@@ -425,7 +573,7 @@ if (!window.lsCaptureLoaded) {
     
     let bounds = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
     if (activeScroller.element !== window) {
-      bounds = activeScroller.element.getBoundingClientRect();
+      bounds = activeScroller.getContentRect();
     }
     
     if (lastClientY > bounds.bottom - edgeSize) {
@@ -455,7 +603,7 @@ if (!window.lsCaptureLoaded) {
       
       let boundsLeft = 0, boundsTop = 0;
       if (activeScroller.element !== window) {
-        const bounds = activeScroller.element.getBoundingClientRect();
+        const bounds = activeScroller.getContentRect();
         boundsLeft = bounds.left;
         boundsTop = bounds.top;
       }
@@ -468,7 +616,6 @@ if (!window.lsCaptureLoaded) {
       const contentWidth = Math.abs(contentCurrentX - contentStartX);
       const contentHeight = Math.abs(contentCurrentY - contentStartY);
       
-      // Convert content coordinates back to page coordinates for the visual rectangle
       const screenX = boundsLeft + (contentLeft - activeScroller.getScrollLeft());
       const screenY = boundsTop + (contentTop - activeScroller.getScrollTop());
       
@@ -488,7 +635,7 @@ if (!window.lsCaptureLoaded) {
     
     let boundsLeft = 0, boundsTop = 0;
     if (activeScroller.element !== window) {
-      const bounds = activeScroller.element.getBoundingClientRect();
+      const bounds = activeScroller.getContentRect();
       boundsLeft = bounds.left;
       boundsTop = bounds.top;
     }
@@ -496,14 +643,34 @@ if (!window.lsCaptureLoaded) {
     const contentCurrentX = (lastClientX - boundsLeft) + activeScroller.getScrollLeft();
     const contentCurrentY = (lastClientY - boundsTop) + activeScroller.getScrollTop();
     
-    const contentLeft = Math.min(contentStartX, contentCurrentX);
-    const contentTop = Math.min(contentStartY, contentCurrentY);
-    const contentWidth = Math.abs(contentCurrentX - contentStartX);
-    const contentHeight = Math.abs(contentCurrentY - contentStartY);
+    let contentLeft = Math.min(contentStartX, contentCurrentX);
+    let contentTop = Math.min(contentStartY, contentCurrentY);
+    let contentWidth = Math.abs(contentCurrentX - contentStartX);
+    let contentHeight = Math.abs(contentCurrentY - contentStartY);
     
     const finalScroller = activeScroller; 
     
-    // Check if the selection is entirely within the CURRENT viewport
+    // Magnetic Scroller Snapping & Scroll-Context Clipping:
+    // If selecting inside an inner container (e.g. Threads/Discord/Twitter feed),
+    // clamp selection horizontally to the inner container's content box.
+    // This prevents capturing adjacent static sidebars (which cause duplicate slices)
+    // and outer empty margins.
+    if (finalScroller.element !== window) {
+      const scrollerBox = finalScroller.getContentRect();
+      const currentScrollX = finalScroller.getScrollLeft();
+      
+      const selScreenLeft = boundsLeft + (contentLeft - currentScrollX);
+      const selScreenRight = selScreenLeft + contentWidth;
+      
+      const clampedLeft = Math.max(scrollerBox.left, selScreenLeft);
+      const clampedRight = Math.min(scrollerBox.right, selScreenRight);
+      
+      if (clampedRight > clampedLeft) {
+        contentLeft = (clampedLeft - boundsLeft) + currentScrollX;
+        contentWidth = clampedRight - clampedLeft;
+      }
+    }
+
     const currentScrollX = finalScroller.getScrollLeft();
     const currentScrollY = finalScroller.getScrollTop();
     const vWidth = finalScroller.getViewportWidth();
@@ -515,7 +682,6 @@ if (!window.lsCaptureLoaded) {
       (contentLeft + contentWidth) <= (currentScrollX + vWidth) &&
       (contentTop + contentHeight) <= (currentScrollY + vHeight);
       
-    // Screen coordinates of the selection right now
     const screenX = boundsLeft + (contentLeft - currentScrollX);
     const screenY = boundsTop + (contentTop - currentScrollY);
     
@@ -528,25 +694,21 @@ if (!window.lsCaptureLoaded) {
     await wait(100); 
     
     if (isFullyVisible) {
-      chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, (response) => {
-        if (response && response.dataUrl) {
-          chrome.runtime.sendMessage({
-            action: 'OPEN_RESULT',
-              payload: {
-                type: 'area',
-                image: response.dataUrl,
-                rect: { 
-                  x: screenX, 
-                  y: screenY, 
-                  width: contentWidth, 
-                  height: contentHeight 
-                },
-                dpr: window.devicePixelRatio,
-                windowWidth: window.innerWidth
-              }
-          });
-        }
-      });
+      try {
+        const session = createCaptureSession('area', {
+          rect: { 
+            x: screenX, 
+            y: screenY, 
+            width: contentWidth, 
+            height: contentHeight 
+          }
+        });
+        await session.captureFrame(0, 0);
+        await session.finish();
+      } catch (err) {
+        console.error("Area capture failed:", err);
+        alert("Capture failed: " + err.message);
+      }
     } else {
       await captureAreaSegments({
         left: contentLeft,
@@ -567,73 +729,63 @@ if (!window.lsCaptureLoaded) {
     const viewportHeight = scroller.getViewportHeight();
     const viewportWidth = scroller.getViewportWidth();
     
-    const segments = [];
-    
-    // Scroll conceptually to the top of the selection
-    scroller.scrollTo(area.left, area.top);
-    await wait(300);
-    
-    let restoreFixed = null;
-    
-    while (true) {
-      // Re-hide fixed/sticky elements before each capture after the first,
-      // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
-      if (segments.length >= 1) {
-        hideFixedElements();
-        await wait(50); // Let browser repaint after hiding
-      }
-      
-      const response = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
-      });
-      
-      segments.push({
-        y: scroller.getScrollTop(),
-        x: scroller.getScrollLeft(),
-        dataUrl: response.dataUrl
-      });
-      
-      if (segments.length === 1) {
-        restoreFixed = hideFixedElements();
-        await wait(50);
-      }
-      
-      const scrolledSoFar = scroller.getScrollTop() - area.top;
-      
-      if (scrolledSoFar + viewportHeight >= area.height) {
-        break;
-      }
-      
-      const previousScrollY = scroller.getScrollTop();
-      scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-      await wait(300);
-      
-      if (scroller.getScrollTop() === previousScrollY) {
-        break; 
-      }
-    }
-    
-    if (restoreFixed) restoreFixed();
-    restoreScrollbar();
-    scroller.scrollTo(originalScrollLeft, originalScrollTop);
-    
-    chrome.runtime.sendMessage({
-      action: 'OPEN_RESULT',
-      payload: {
-        type: 'area_stitched',
-        segments: segments,
-        contentLeft: area.left,
-        contentTop: area.top,
-        contentWidth: area.width,
-        contentHeight: area.height,
-        boundsLeft: area.boundsLeft,
-        boundsTop: area.boundsTop,
-        viewportWidth: viewportWidth,
-        viewportHeight: viewportHeight,
-        dpr: window.devicePixelRatio,
-        windowWidth: window.innerWidth
-      }
+    const restoreFns = [];
+    let frameIndex = 0;
+
+    const session = createCaptureSession('area_stitched', {
+      contentLeft: area.left,
+      contentTop: area.top,
+      contentWidth: area.width,
+      contentHeight: area.height,
+      boundsLeft: area.boundsLeft,
+      boundsTop: area.boundsTop,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight
     });
+    
+    try {
+      await scrollAndSettle(scroller, area.left, area.top);
+      
+      while (true) {
+        if (frameIndex >= 1) {
+          restoreFns.push(hideFixedElements());
+          await wait(60);
+        }
+        
+        await session.captureFrame(frameIndex, scroller.getScrollTop(), scroller.getScrollLeft());
+        frameIndex++;
+        
+        if (frameIndex === 1) {
+          restoreFns.push(hideFixedElements());
+          await wait(60);
+        }
+        
+        const scrolledSoFar = scroller.getScrollTop() - area.top;
+        if (scrolledSoFar + viewportHeight >= area.height) {
+          break;
+        }
+        
+        const previousScrollY = scroller.getScrollTop();
+        await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
+        
+        if (scroller.getScrollTop() === previousScrollY) {
+          break; 
+        }
+      }
+      
+      await session.finish();
+    } catch (err) {
+      session.abort();
+      console.error("Area segment capture failed:", err);
+      alert("Capture failed: " + err.message);
+    } finally {
+      while (restoreFns.length > 0) {
+        const rf = restoreFns.pop();
+        if (typeof rf === 'function') rf();
+      }
+      restoreScrollbar();
+      scroller.scrollTo(originalScrollLeft, originalScrollTop);
+    }
   }
 
   // --- Full Page Capture Logic ---
@@ -641,7 +793,6 @@ if (!window.lsCaptureLoaded) {
     removeToolbar();
     
     const scroller = createScroller(findMainScroller());
-    
     const originalScrollTop = scroller.getScrollTop();
     const restoreScrollbar = scroller.hideScrollbar();
     
@@ -649,68 +800,58 @@ if (!window.lsCaptureLoaded) {
     const viewportHeight = scroller.getViewportHeight();
     const viewportWidth = scroller.getViewportWidth();
     
-    scroller.scrollTo(0, 0);
-    await wait(300); 
+    const scrollerBox = scroller.getContentRect();
+    const boundsTop = scrollerBox.top;
+    const boundsLeft = scrollerBox.left;
     
-    const segments = [];
-    let restoreFixed = null;
+    const restoreFns = [];
+    let frameIndex = 0;
     
-    while (true) {
-      // Re-hide fixed/sticky elements before each capture after the first,
-      // to catch dynamically created elements (e.g. scroll-triggered sticky bars)
-      if (segments.length >= 1) {
-        hideFixedElements();
-        await wait(50); // Let browser repaint after hiding
-      }
-      
-      const response = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE_TAB' }, resolve);
-      });
-      
-      segments.push({
-        y: scroller.getScrollTop(),
-        dataUrl: response.dataUrl
-      });
-      
-      if (segments.length === 1) {
-        restoreFixed = hideFixedElements();
-        await wait(50);
-      }
-      
-      const previousScrollY = scroller.getScrollTop();
-      scroller.scrollTo(scroller.getScrollLeft(), previousScrollY + viewportHeight);
-      await wait(300); 
-      
-      if (scroller.getScrollTop() === previousScrollY) {
-        break;
-      }
-    }
-    
-    if (restoreFixed) restoreFixed();
-    restoreScrollbar();
-    scroller.scrollTo(0, originalScrollTop);
-    
-    let boundsTop = 0;
-    let boundsLeft = 0;
-    if (scroller.element !== window) {
-      const bounds = scroller.element.getBoundingClientRect();
-      boundsTop = bounds.top;
-      boundsLeft = bounds.left;
-    }
-
-    chrome.runtime.sendMessage({
-      action: 'OPEN_RESULT',
-      payload: {
-        type: 'full',
-        segments: segments,
-        totalHeight: totalHeight,
-        viewportHeight: viewportHeight,
-        viewportWidth: viewportWidth,
-        boundsTop: boundsTop,
-        boundsLeft: boundsLeft,
-        dpr: window.devicePixelRatio,
-        windowWidth: window.innerWidth
-      }
+    const session = createCaptureSession('full', {
+      totalHeight: totalHeight,
+      viewportHeight: viewportHeight,
+      viewportWidth: viewportWidth,
+      boundsTop: boundsTop,
+      boundsLeft: boundsLeft
     });
+    
+    try {
+      await scrollAndSettle(scroller, 0, 0);
+      
+      while (true) {
+        if (frameIndex >= 1) {
+          restoreFns.push(hideFixedElements());
+          await wait(60);
+        }
+        
+        await session.captureFrame(frameIndex, scroller.getScrollTop(), scroller.getScrollLeft());
+        frameIndex++;
+        
+        if (frameIndex === 1) {
+          restoreFns.push(hideFixedElements());
+          await wait(60);
+        }
+        
+        const previousScrollY = scroller.getScrollTop();
+        await scrollAndSettle(scroller, scroller.getScrollLeft(), previousScrollY + viewportHeight);
+        
+        if (scroller.getScrollTop() === previousScrollY) {
+          break;
+        }
+      }
+      
+      await session.finish();
+    } catch (err) {
+      session.abort();
+      console.error("Full page capture failed:", err);
+      alert("Capture failed: " + err.message);
+    } finally {
+      while (restoreFns.length > 0) {
+        const rf = restoreFns.pop();
+        if (typeof rf === 'function') rf();
+      }
+      restoreScrollbar();
+      scroller.scrollTo(0, originalScrollTop);
+    }
   }
 }

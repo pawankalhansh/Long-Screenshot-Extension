@@ -241,7 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (err) {
       console.error("OCR Error:", err);
       alert("Failed to extract text: " + (err.message || (typeof err === 'string' ? err : JSON.stringify(err))));
-      modal.style.display = 'none';
+      modal.classList.remove('active');
     } finally {
       loading.style.display = 'none';
       // keep current tool active, do not switch back to pen
@@ -510,7 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Use current mouse position to finish the crop/scan if they released outside
         let finalPos;
-        if (e && e.clientX) {
+        if (e && typeof e.clientX === 'number') {
            finalPos = getMousePos(e);
         } else {
            finalPos = lastPos;

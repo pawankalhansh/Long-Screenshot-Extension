@@ -1,14 +1,65 @@
-document.addEventListener('DOMContentLoaded', () => {
+/**
+ * result.js
+ * Renders captured screenshots from IndexedDB (or fallback storage),
+ * applies safe dimensions, handles canvas export, and coordinates editing tools.
+ */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const loading = document.getElementById('loading');
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('sessionId');
+
+  if (sessionId && typeof LSStorage !== 'undefined') {
+    try {
+      const session = await LSStorage.getSession(sessionId);
+      if (session) {
+        const frames = await LSStorage.getFrames(sessionId);
+        const segments = frames.map(f => ({
+          y: f.y,
+          x: f.x || 0,
+          blob: f.blob,
+          dataUrl: f.blob
+        }));
+        await processCapture({ ...session, segments });
+        return;
+      }
+    } catch (e) {
+      console.error("Failed to load session from IndexedDB:", e);
+    }
+  }
+
+  // Fallback to chrome.storage.local for single-shot or legacy captures
   chrome.storage.local.get('captureData', (data) => {
-    if (data.captureData) {
+    if (data && data.captureData) {
       processCapture(data.captureData);
-      // Optional: Clear storage to free memory
       chrome.storage.local.remove('captureData');
     } else {
-      document.getElementById('loading').textContent = 'No capture data found.';
+      if (loading) loading.textContent = 'No capture data found.';
     }
   });
 });
+
+function getSafeDimensions(rawWidth, rawHeight) {
+  const MAX_DIM = 32767;
+  const MAX_AREA = 268435456; // 16384 * 16384 (~268 Megapixels)
+  let scale = 1.0;
+  
+  if (rawWidth > MAX_DIM) {
+    scale = Math.min(scale, MAX_DIM / rawWidth);
+  }
+  if (rawHeight > MAX_DIM) {
+    scale = Math.min(scale, MAX_DIM / rawHeight);
+  }
+  if ((rawWidth * scale) * (rawHeight * scale) > MAX_AREA) {
+    scale = Math.min(scale, Math.sqrt(MAX_AREA / (rawWidth * rawHeight)));
+  }
+  
+  return {
+    width: Math.max(1, Math.floor(rawWidth * scale)),
+    height: Math.max(1, Math.floor(rawHeight * scale)),
+    scale: scale
+  };
+}
 
 async function processCapture(data) {
   const canvas = document.getElementById('result-canvas');
@@ -17,13 +68,21 @@ async function processCapture(data) {
   const dpr = data.dpr || 1;
 
   if (data.type === 'visible') {
-    const img = await loadImage(data.image);
-    canvas.width = img.width;
-    canvas.height = img.height;
+    const firstSeg = (data.segments && data.segments.length > 0) ? data.segments[0] : null;
+    const source = (firstSeg && (firstSeg.blob || firstSeg.dataUrl)) || data.image;
+    const img = await loadImage(source);
+    const safeDim = getSafeDimensions(img.width, img.height);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
     ctx.drawImage(img, 0, 0);
   } 
   else if (data.type === 'area') {
-    const img = await loadImage(data.image);
+    const firstSeg = (data.segments && data.segments.length > 0) ? data.segments[0] : null;
+    const source = (firstSeg && (firstSeg.blob || firstSeg.dataUrl)) || data.image;
+    const img = await loadImage(source);
     const rect = data.rect;
     
     const actualDpr = data.windowWidth ? (img.width / data.windowWidth) : dpr;
@@ -33,42 +92,94 @@ async function processCapture(data) {
     const sWidth = Math.round(rect.width * actualDpr);
     const sHeight = Math.round(rect.height * actualDpr);
 
-    canvas.width = sWidth;
-    canvas.height = sHeight;
+    const safeDim = getSafeDimensions(sWidth, sHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
     ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
   }
   else if (data.type === 'full') {
-    // We have segments
-    const segments = data.segments;
+    const segments = data.segments || [];
     if (segments.length === 0) return;
     
-    const firstImg = await loadImage(segments[0].dataUrl);
+    const firstImg = await loadImage(segments[0].blob || segments[0].dataUrl);
     const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
     
-    canvas.width = firstImg.width;
-    canvas.height = Math.round(data.totalHeight * actualDpr);
+    // Check if capture is of an inner scroller or the full window
+    const isInnerScroller = (data.boundsLeft > 0 || data.boundsTop > 0 || (data.viewportWidth && data.viewportWidth < data.windowWidth - 20));
+    
+    const cropX = isInnerScroller ? Math.round(data.boundsLeft * actualDpr) : 0;
+    const cropY = isInnerScroller ? Math.round(data.boundsTop * actualDpr) : 0;
+    const cropWidth = isInnerScroller ? Math.round(data.viewportWidth * actualDpr) : firstImg.width;
+    const cropHeight = isInnerScroller ? Math.round(data.viewportHeight * actualDpr) : firstImg.height;
+    
+    const rawWidth = cropWidth;
+    const rawHeight = Math.round(data.totalHeight * actualDpr);
+    
+    const safeDim = getSafeDimensions(rawWidth, rawHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
 
+    let lastEnd = 0;
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      const img = await loadImage(seg.dataUrl);
-      const dy = Math.round(seg.y * actualDpr);
+      const img = await loadImage(seg.blob || seg.dataUrl);
       
-      ctx.drawImage(img, 0, dy, img.width, img.height);
+      const segY = seg.y;
+      const segHeight = data.viewportHeight || Math.round(firstImg.height / actualDpr);
+      
+      if (i === 0) {
+        ctx.drawImage(img, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+        lastEnd = segY + segHeight;
+      } else {
+        const newContentStart = Math.max(segY, lastEnd);
+        const newContentEnd = segY + segHeight;
+        
+        if (newContentEnd > newContentStart) {
+          const sliceOffsetY = newContentStart - segY;
+          const sliceHeight = newContentEnd - newContentStart;
+          
+          const sx = cropX;
+          const sy = cropY + Math.round(sliceOffsetY * actualDpr);
+          const sw = cropWidth;
+          const sh = Math.round(sliceHeight * actualDpr);
+          
+          const dx = 0;
+          const dy = Math.round(newContentStart * actualDpr);
+          
+          ctx.drawImage(img, sx, sy, sw, sh, dx, dy, sw, sh);
+          lastEnd = newContentEnd;
+        }
+      }
     }
   }
   else if (data.type === 'area_stitched') {
-    const segments = data.segments;
+    const segments = data.segments || [];
     if (segments.length === 0) return;
     
-    const firstImg = await loadImage(segments[0].dataUrl);
+    const firstImg = await loadImage(segments[0].blob || segments[0].dataUrl);
     const actualDpr = data.windowWidth ? (firstImg.width / data.windowWidth) : dpr;
     
-    canvas.width = Math.round(data.contentWidth * actualDpr);
-    canvas.height = Math.round(data.contentHeight * actualDpr);
+    const rawWidth = Math.round(data.contentWidth * actualDpr);
+    const rawHeight = Math.round(data.contentHeight * actualDpr);
+    
+    const safeDim = getSafeDimensions(rawWidth, rawHeight);
+    canvas.width = safeDim.width;
+    canvas.height = safeDim.height;
+    
+    if (safeDim.scale < 1.0) {
+      ctx.scale(safeDim.scale, safeDim.scale);
+    }
     
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      const img = await loadImage(seg.dataUrl);
+      const img = await loadImage(seg.blob || seg.dataUrl);
       
       // Viewport bounds in content space (Vertical only)
       const viewportTop = seg.y;
@@ -84,10 +195,7 @@ async function processCapture(data) {
       
       if (intersectBottom > intersectTop) {
         // Screen X of the selection's left edge
-        // boundsLeft is the scroller's on-screen X.
-        // contentLeft is the selection's X relative to the scroller's content.
-        // seg.x is the scroller's scrollLeft.
-        const screenX = data.boundsLeft + data.contentLeft - seg.x;
+        const screenX = data.boundsLeft + data.contentLeft - (seg.x || 0);
         
         // Screen Y of the current intersecting slice
         const screenY = data.boundsTop + (intersectTop - seg.y);
@@ -99,7 +207,7 @@ async function processCapture(data) {
         const sHeight = Math.round((intersectBottom - intersectTop) * actualDpr);
         
         // Canvas coordinates to draw to
-        const dx = 0; // Always draw full width of selection
+        const dx = 0;
         const dy = Math.round((intersectTop - contentTop) * actualDpr);
         
         ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, sWidth, sHeight);
@@ -107,12 +215,12 @@ async function processCapture(data) {
     }
   }
 
-  loading.style.display = 'none';
+  if (loading) loading.style.display = 'none';
   window.dispatchEvent(new CustomEvent('screenshot-ready'));
 
   function getCombinedCanvas() {
     const annotationCanvas = document.getElementById('annotation-canvas');
-    if (!annotationCanvas || annotationCanvas.width === 0) return canvas; // Fallback if no annotations
+    if (!annotationCanvas || annotationCanvas.width === 0) return canvas;
     const combined = document.createElement('canvas');
     combined.width = canvas.width;
     combined.height = canvas.height;
@@ -179,10 +287,9 @@ function exportCanvas(canvas, mimeType, quality, callback, scale = 1.0) {
     if (blob) {
       callback(blob);
     } else {
-      // If failed, try scaling down further
-      const nextScale = scale * 0.75; // Reduce by 25%
+      const nextScale = scale * 0.75;
       if (nextScale < 0.2) {
-        callback(null); // Too small, give up
+        callback(null);
       } else {
         console.warn(`Export failed at scale ${scale}, retrying at ${nextScale}`);
         exportCanvas(canvas, mimeType, quality, callback, nextScale);
@@ -214,11 +321,25 @@ function downloadFile(canvas, mimeType, filename, btnId) {
   });
 }
 
-function loadImage(src) {
+function loadImage(srcOrBlob) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
+    let objectUrl = null;
+    if (srcOrBlob instanceof Blob) {
+      objectUrl = URL.createObjectURL(srcOrBlob);
+      img.src = objectUrl;
+    } else if (typeof srcOrBlob === 'string') {
+      img.src = srcOrBlob;
+    } else {
+      return reject(new Error('Invalid image source'));
+    }
+    img.onload = () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      reject(err);
+    };
   });
 }
