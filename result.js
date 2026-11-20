@@ -218,6 +218,75 @@ async function processCapture(data) {
   if (loading) loading.style.display = 'none';
   window.dispatchEvent(new CustomEvent('screenshot-ready'));
 
+  // Automatically copy to clipboard like Windows Snipping Tool
+  setTimeout(autoCopyToClipboard, 150);
+
+  function showToast(message, duration = 3500) {
+    let toast = document.getElementById('ls-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'ls-toast';
+      toast.className = 'toast-notification';
+      toast.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        <span id="ls-toast-msg"></span>
+      `;
+      document.body.appendChild(toast);
+    }
+    document.getElementById('ls-toast-msg').textContent = message;
+    toast.classList.add('show');
+    
+    clearTimeout(toast._timeout);
+    toast._timeout = setTimeout(() => {
+      toast.classList.remove('show');
+    }, duration);
+  }
+
+  function autoCopyToClipboard() {
+    const copyBtn = document.getElementById('copy-image');
+    const originalText = copyBtn ? copyBtn.textContent : 'Copy Image';
+    let hasCopied = false;
+
+    const performCopy = () => {
+      if (hasCopied) return;
+      const combined = getCombinedCanvas();
+      exportCanvas(combined, 'image/png', 1.0, async (blob) => {
+        if (!blob || hasCopied) return;
+        try {
+          const item = new ClipboardItem({ 'image/png': blob });
+          await navigator.clipboard.write([item]);
+          hasCopied = true;
+          if (copyBtn) {
+            copyBtn.textContent = 'Copied to Clipboard! ✓';
+            copyBtn.style.background = '#107c41';
+            copyBtn.style.color = '#fff';
+            copyBtn.style.borderColor = '#107c41';
+            setTimeout(() => {
+              copyBtn.textContent = originalText;
+              copyBtn.style.background = '';
+              copyBtn.style.color = '';
+              copyBtn.style.borderColor = '';
+            }, 3500);
+          }
+          showToast('Copied to clipboard automatically! (Ready to paste Ctrl + V)');
+        } catch (err) {
+          console.warn("Auto clipboard copy deferred until focus:", err);
+        }
+      });
+    };
+
+    try {
+      window.focus();
+      performCopy();
+    } catch (e) {}
+
+    window.addEventListener('focus', () => {
+      if (!hasCopied) {
+        performCopy();
+      }
+    }, { once: true });
+  }
+
   function getCombinedCanvas() {
     const annotationCanvas = document.getElementById('annotation-canvas');
     if (!annotationCanvas || annotationCanvas.width === 0) return canvas;
@@ -247,10 +316,17 @@ async function processCapture(data) {
           const item = new ClipboardItem({ 'image/png': blob });
           await navigator.clipboard.write([item]);
           
-          copyBtn.textContent = 'Copied!';
+          copyBtn.textContent = 'Copied to Clipboard! ✓';
+          copyBtn.style.background = '#107c41';
+          copyBtn.style.color = '#fff';
+          copyBtn.style.borderColor = '#107c41';
+          showToast('Copied to clipboard! (Ready to paste Ctrl + V)');
           setTimeout(() => {
             copyBtn.textContent = originalText;
-          }, 2000);
+            copyBtn.style.background = '';
+            copyBtn.style.color = '';
+            copyBtn.style.borderColor = '';
+          }, 2500);
         } catch (err) {
           console.error('Clipboard write error:', err);
           copyBtn.textContent = originalText;
