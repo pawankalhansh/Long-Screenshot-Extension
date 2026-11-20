@@ -1,5 +1,8 @@
-if (!window.lsCaptureLoaded) {
-  window.lsCaptureLoaded = true;
+if (window.__lsCaptureInstance && typeof window.__lsCaptureInstance.destroy === 'function') {
+  window.__lsCaptureInstance.destroy();
+}
+
+(function () {
 
   let overlayHost = null;
   let shadowRoot = null;
@@ -868,4 +871,34 @@ if (!window.lsCaptureLoaded) {
       scroller.scrollTo(0, originalScrollTop);
     }
   }
-}
+
+  // --- Keyboard Shortcuts (Esc to close, Alt+Shift+S in-page fallback) ---
+  function onKeyDown(e) {
+    if (e.key === 'Escape') {
+      if (isCapturingArea || overlayHost) {
+        e.preventDefault();
+        stopAreaCapture();
+        removeToolbar();
+      }
+      return;
+    }
+
+    // Direct in-page fallback: triggers even if Chrome global shortcut is unbound or conflicts
+    if (e.altKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      toggleToolbar();
+    }
+  }
+
+  window.addEventListener('keydown', onKeyDown, true);
+
+  // Expose destroy hook so extension reloads cleanly re-inject without tab reload
+  window.__lsCaptureInstance = {
+    destroy: () => {
+      stopAreaCapture();
+      removeToolbar();
+      captureOverlay.remove();
+      window.removeEventListener('keydown', onKeyDown, true);
+    }
+  };
+})();
